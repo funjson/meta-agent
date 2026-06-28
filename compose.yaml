@@ -1,0 +1,27 @@
+name: meta-agent
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: meta-agent-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${META_AGENT_DB_NAME:-meta_agent}
+      MYSQL_USER: ${META_AGENT_DB_USER:-meta_agent}
+      MYSQL_PASSWORD: ${META_AGENT_DB_PASSWORD:-change-me-local}
+      MYSQL_ROOT_PASSWORD: ${META_AGENT_DB_ROOT_PASSWORD:-change-root-local}
+      TZ: UTC
+    ports:
+      - "127.0.0.1:3307:3306"
+    volumes:
+      - meta-agent-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${META_AGENT_DB_ROOT_PASSWORD:-change-root-local}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+
+volumes:
+  meta-agent-mysql-data:
+

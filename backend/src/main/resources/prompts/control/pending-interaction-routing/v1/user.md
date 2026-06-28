@@ -1,0 +1,8 @@
+对话上下文：
+{{conversationContext}}
+
+当前等待候选 JSON：
+{{candidateJson}}
+
+当前用户消息：
+{{userMessage}}

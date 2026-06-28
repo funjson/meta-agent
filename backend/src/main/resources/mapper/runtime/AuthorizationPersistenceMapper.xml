@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.runtime.infrastructure.persistence.mybatis.AuthorizationPersistenceMapper">
+
+    <insert id="insert">
+        INSERT INTO authorization_request (
+            id, job_id, task_run_id, loop_node_id,
+            request_type, source_type, source_id,
+            requested_delta_json, status
+        ) VALUES (
+            #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{requestType}, #{sourceType}, #{sourceId},
+            CAST(#{requestedDeltaJson} AS JSON), 'PENDING'
+        )
+    </insert>
+
+    <select id="findByStatus" resultType="map">
+        SELECT
+            BIN_TO_UUID(id) AS id,
+            BIN_TO_UUID(job_id) AS jobId,
+            BIN_TO_UUID(task_run_id) AS taskRunId,
+            BIN_TO_UUID(loop_node_id) AS loopNodeId,
+            request_type AS requestType,
+            source_type AS sourceType,
+            source_id AS sourceId,
+            CAST(requested_delta_json AS CHAR) AS requestedDeltaJson,
+            status,
+            CAST(decision_json AS CHAR) AS decisionJson,
+            created_at AS createdAt,
+            decided_at AS decidedAt
+        FROM authorization_request
+        WHERE status = #{status}
+        ORDER BY created_at
+    </select>
+
+    <update id="decide">
+        UPDATE authorization_request
+        SET status = #{targetStatus},
+            decision_json = CAST(#{decisionJson} AS JSON),
+            decided_at = CURRENT_TIMESTAMP(6)
+        WHERE id =
+            #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = #{expectedStatus}
+    </update>
+</mapper>

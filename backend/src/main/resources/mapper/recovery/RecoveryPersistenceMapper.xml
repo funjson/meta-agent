@@ -1,0 +1,277 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.recovery.infrastructure.persistence.mybatis.RecoveryPersistenceMapper">
+
+    <update id="acquireLease">
+        UPDATE task_run
+        SET lease_owner = #{workerId},
+            lease_until = TIMESTAMPADD(
+                SECOND,
+                #{leaseSeconds},
+                CURRENT_TIMESTAMP(6)
+            ),
+            heartbeat_at = CURRENT_TIMESTAMP(6),
+            version = version + 1
+        WHERE id =
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status IN ('RUNNING', 'PAUSED', 'WAITING_CHILD_JOB')
+          AND (
+              lease_owner IS NULL
+              OR lease_until IS NULL
+              OR lease_until &lt;= CURRENT_TIMESTAMP(6)
+              OR lease_owner = #{workerId}
+          )
+    </update>
+
+    <update id="heartbeat">
+        UPDATE task_run
+        SET lease_until = TIMESTAMPADD(
+                SECOND,
+                #{leaseSeconds},
+                CURRENT_TIMESTAMP(6)
+            ),
+            heartbeat_at = CURRENT_TIMESTAMP(6),
+            version = version + 1
+        WHERE id =
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status IN ('RUNNING', 'PAUSED', 'WAITING_CHILD_JOB')
+          AND lease_owner = #{workerId}
+    </update>
+
+    <update id="releaseLease">
+        UPDATE task_run
+        SET lease_owner = NULL,
+            lease_until = NULL,
+            version = version + 1
+        WHERE id =
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND lease_owner = #{workerId}
+    </update>
+
+    <select id="findRecoveryCandidate" resultType="map">
+        SELECT
+            BIN_TO_UUID(task_run.id) AS taskRunId,
+            BIN_TO_UUID(job.id) AS jobId,
+            BIN_TO_UUID(task.id) AS taskId,
+            task_run.status AS taskRunStatus,
+            task_run.lease_owner AS leaseOwner,
+            task_run.lease_until AS leaseUntil,
+            BIN_TO_UUID(checkpoint.id) AS checkpointId,
+            checkpoint.checkpoint_type AS checkpointType,
+            checkpoint.restorable AS checkpointRestorable,
+            checkpoint.checksum =
+                LOWER(SHA2(CAST(checkpoint.state_json AS CHAR), 256))
+                AS checkpointChecksumValid,
+            BIN_TO_UUID(checkpoint.loop_run_id) AS loopRunId,
+            loop_run.parent_type AS loopRunParentType,
+            BIN_TO_UUID(checkpoint.loop_node_id) AS loopNodeId,
+            loop_node.status AS loopNodeStatus,
+            loop_node.action_type AS actionType,
+            loop_node.side_effect_class AS sideEffectClass
+        FROM task_run
+        JOIN task ON task.id = task_run.task_id
+        JOIN job ON job.id = task.job_id
+        LEFT JOIN checkpoint
+          ON checkpoint.id = task_run.latest_checkpoint_id
+        LEFT JOIN loop_run
+          ON loop_run.id = checkpoint.loop_run_id
+        LEFT JOIN loop_node
+          ON loop_node.id = checkpoint.loop_node_id
+        WHERE task_run.id =
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <select id="findResumeSnapshot" resultType="map">
+        SELECT
+            BIN_TO_UUID(checkpoint.id) AS checkpointId,
+            checkpoint.checkpoint_type AS checkpointType,
+            BIN_TO_UUID(job.id) AS jobId,
+            BIN_TO_UUID(task.id) AS taskId,
+            BIN_TO_UUID(task_run.id) AS taskRunId,
+            BIN_TO_UUID(loop_run.id) AS loopRunId,
+            BIN_TO_UUID(loop_node.id) AS loopNodeId,
+            BIN_TO_UUID(loop_node.parent_node_id) AS parentNodeId,
+            loop_node.depth,
+            loop_node.iteration_no AS iterationNo,
+            loop_run.parent_type AS loopRunParentType,
+            BIN_TO_UUID(loop_run.parent_id) AS loopRunParentId,
+            loop_run.recursion_depth AS recursionDepth,
+            COALESCE(
+                JSON_UNQUOTE(
+                    JSON_EXTRACT(loop_node.decision_json, '$.provider')
+                ),
+                JSON_UNQUOTE(
+                    JSON_EXTRACT(job.policy_json, '$.providerId')
+                ),
+                'fake'
+            ) AS providerId,
+            loop_node.goal,
+            COALESCE(
+                JSON_UNQUOTE(
+                    JSON_EXTRACT(
+                        loop_node.input_json,
+                        '$.inheritedFeedback'
+                    )
+                ),
+                ''
+            ) AS feedback,
+            loop_node.action_type AS actionType,
+            COALESCE(
+                JSON_UNQUOTE(
+                    JSON_EXTRACT(
+                        loop_node.decision_json,
+                        '$.completionCriterion'
+                    )
+                ),
+                '恢复动作产生可验证结果'
+            ) AS completionCriterion,
+            COALESCE(
+                CAST(
+                    JSON_UNQUOTE(
+                        JSON_EXTRACT(
+                            loop_node.decision_json,
+                            '$.maxTokens'
+                        )
+                    ) AS UNSIGNED
+                ),
+                512
+            ) AS maxTokens,
+            BIN_TO_UUID(action_phase.id) AS actionPhaseId,
+            action_phase.status AS actionPhaseStatus
+        FROM task_run
+        JOIN task ON task.id = task_run.task_id
+        JOIN job ON job.id = task.job_id
+        JOIN checkpoint
+          ON checkpoint.id = task_run.latest_checkpoint_id
+        JOIN loop_run ON loop_run.id = checkpoint.loop_run_id
+        JOIN loop_node ON loop_node.id = checkpoint.loop_node_id
+        LEFT JOIN loop_node_phase action_phase
+          ON action_phase.loop_node_id = loop_node.id
+         AND action_phase.phase_type = 'ACTION_EXECUTION'
+        WHERE task_run.id =
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <select id="findLoopNodeResumeContext" resultType="map">
+        SELECT
+            BIN_TO_UUID(job.id) AS jobId,
+            BIN_TO_UUID(task.id) AS taskId,
+            BIN_TO_UUID(task_run.id) AS taskRunId,
+            BIN_TO_UUID(loop_run.id) AS loopRunId,
+            BIN_TO_UUID(loop_node.id) AS loopNodeId,
+            BIN_TO_UUID(loop_node.parent_node_id) AS parentNodeId,
+            loop_node.depth,
+            loop_node.iteration_no AS iterationNo,
+            loop_run.parent_type AS loopRunParentType,
+            BIN_TO_UUID(loop_run.parent_id) AS loopRunParentId,
+            loop_run.recursion_depth AS recursionDepth,
+            COALESCE(
+                JSON_UNQUOTE(
+                    JSON_EXTRACT(loop_node.decision_json, '$.provider')
+                ),
+                JSON_UNQUOTE(
+                    JSON_EXTRACT(job.policy_json, '$.providerId')
+                ),
+                'fake'
+            ) AS providerId,
+            loop_node.goal,
+            COALESCE(
+                JSON_UNQUOTE(
+                    JSON_EXTRACT(
+                        loop_node.input_json,
+                        '$.inheritedFeedback'
+                    )
+                ),
+                ''
+            ) AS feedback,
+            COALESCE(
+                JSON_UNQUOTE(
+                    JSON_EXTRACT(
+                        loop_node.decision_json,
+                        '$.completionCriterion'
+                    )
+                ),
+                'Child Job 完成并回传满足合同的结果'
+            ) AS completionCriterion
+        FROM loop_node
+        JOIN loop_run ON loop_run.id = loop_node.loop_run_id
+        JOIN task_run ON task_run.id = loop_run.task_run_id
+        JOIN task ON task.id = task_run.task_id
+        JOIN job ON job.id = task.job_id
+        WHERE loop_node.id =
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <select id="findCompletedChildJobOutcome" resultType="string">
+        SELECT CAST(outcome_json AS CHAR)
+        FROM job_derivation
+        WHERE origin_loop_node_id =
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'COMPLETED'
+          AND outcome_json IS NOT NULL
+    </select>
+
+    <select id="findAnsweredClarificationOutcome" resultType="map">
+        SELECT
+            BIN_TO_UUID(id) AS clarificationRequestId,
+            question,
+            answer
+        FROM clarification_request
+        WHERE loop_node_id =
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'RESOLVED'
+          AND answer IS NOT NULL
+        ORDER BY resolved_at DESC
+        LIMIT 1
+    </select>
+
+    <select id="findAutoRecoveryCandidates" resultType="string">
+        SELECT BIN_TO_UUID(task_run.id)
+        FROM task_run
+        JOIN checkpoint ON checkpoint.id = task_run.latest_checkpoint_id
+        WHERE task_run.status IN ('RUNNING', 'WAITING_CHILD_JOB')
+          AND checkpoint.restorable = TRUE
+          AND checkpoint.checkpoint_type IN (
+              'RUN_START',
+              'ACTION_PREPARED',
+              'CHILD_LOOP_CREATED',
+              'CHILD_JOB_CREATED',
+              'CLARIFICATION_ANSWERED'
+          )
+          AND (
+              task_run.lease_until IS NULL
+              OR task_run.lease_until &lt;= CURRENT_TIMESTAMP(6)
+          )
+        ORDER BY task_run.updated_at
+        LIMIT #{limit}
+    </select>
+
+    <insert id="insertRecoveryAttempt">
+        INSERT INTO recovery_attempt (
+            id, task_run_id, checkpoint_id,
+            interruption_type, disposition, decision_code,
+            status, context_json
+        ) VALUES (
+            #{attemptId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{checkpointId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{interruptionType}, #{disposition}, #{decisionCode},
+            #{status}, CAST(#{contextJson} AS JSON)
+        )
+    </insert>
+
+    <update id="updateRecoveryAttempt">
+        UPDATE recovery_attempt
+        SET status = #{status},
+            context_json = CAST(#{contextJson} AS JSON),
+            completed_at = CASE
+                WHEN #{status} IN ('COMPLETED', 'FAILED')
+                    THEN CURRENT_TIMESTAMP(6)
+                ELSE completed_at
+            END
+        WHERE id =
+            #{attemptId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </update>
+</mapper>

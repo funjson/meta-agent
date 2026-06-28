@@ -1,0 +1,238 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.job.infrastructure.persistence.mybatis.JobPersistenceMapper">
+
+    <select id="findResourceIdByIdempotencyKey" resultType="string">
+        SELECT BIN_TO_UUID(resource_id)
+        FROM command_deduplication
+        WHERE idempotency_key = #{idempotencyKey}
+          AND command_type = #{commandType}
+    </select>
+
+    <insert id="insertJob">
+        INSERT INTO job (
+            id, parent_job_id, root_job_id, recursion_depth,
+            original_request, goal_summary, status, policy_json,
+            effective_policy_snapshot, effective_policy_hash,
+            agent_profile_id, conversation_id, source_message_id,
+            template_id, template_version,
+            subagent_profile_id, subagent_profile_version,
+            version
+        ) VALUES (
+            #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{context.parentJobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            COALESCE(
+                #{context.rootJobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+                #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+            ),
+            #{context.recursionDepth},
+            #{originalRequest}, #{goalSummary}, #{status},
+            JSON_OBJECT('providerId', #{providerId}),
+            JSON_OBJECT('providerId', #{providerId}),
+            LOWER(SHA2(CAST(JSON_OBJECT('providerId', #{providerId}) AS CHAR), 256)),
+            #{context.agentProfileId},
+            #{context.conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{context.sourceMessageId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{context.templateId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{context.templateVersion},
+            #{context.subagentProfileId},
+            #{context.subagentProfileVersion},
+            0
+        )
+    </insert>
+
+    <insert id="insertTask">
+        INSERT INTO task (
+            id, job_id, task_key, sequence_no, title, goal, task_type,
+            status, execution_mode, contract_json, version
+        ) VALUES (
+            #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{taskKey}, #{sequenceNo}, #{title}, #{goal}, 'GENERAL',
+            #{status}, #{executionMode},
+            JSON_OBJECT(
+                'version', 1,
+                'completionPolicy', JSON_OBJECT('requireEvidence', TRUE)
+            ),
+            0
+        )
+    </insert>
+
+    <insert id="insertTaskDependency">
+        INSERT INTO task_dependency (
+            task_id, depends_on_task_id, dependency_type
+        ) VALUES (
+            #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{dependsOnTaskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            'HARD'
+        )
+    </insert>
+
+    <insert id="insertRuntimeEvent">
+        INSERT INTO runtime_event (
+            id, job_id, task_id, aggregate_type, aggregate_id,
+            event_type, payload_json, sequence_no
+        ) VALUES (
+            #{eventId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            'JOB',
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{eventType}, CAST(#{payloadJson} AS JSON), 1
+        )
+    </insert>
+
+    <insert id="insertOutboxEvent">
+        INSERT INTO outbox_event (id, event_type, payload_json, status)
+        VALUES (
+            #{eventId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{eventType}, CAST(#{payloadJson} AS JSON), 'PENDING'
+        )
+    </insert>
+
+    <insert id="registerIdempotencyKey">
+        INSERT INTO command_deduplication (
+            idempotency_key, command_type, resource_id
+        ) VALUES (
+            #{idempotencyKey}, #{commandType},
+            #{resourceId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        )
+    </insert>
+
+    <sql id="jobColumns">
+        BIN_TO_UUID(id) AS id,
+        BIN_TO_UUID(parent_job_id) AS parentJobId,
+        BIN_TO_UUID(root_job_id) AS rootJobId,
+        recursion_depth AS recursionDepth,
+        original_request AS originalRequest,
+        goal_summary AS goalSummary,
+        COALESCE(
+            JSON_UNQUOTE(JSON_EXTRACT(policy_json, '$.providerId')),
+            'fake'
+        ) AS providerId,
+        status,
+        BIN_TO_UUID(template_id) AS templateId,
+        template_version AS templateVersion,
+        subagent_profile_id AS subagentProfileId,
+        subagent_profile_version AS subagentProfileVersion,
+        (
+            SELECT template_key
+            FROM task_graph_template template
+            WHERE template.id = template_id
+              AND template.version = template_version
+        ) AS templateKey,
+        version,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+    </sql>
+
+    <select id="findJobById" resultType="map">
+        SELECT <include refid="jobColumns"/>
+        FROM job
+        WHERE id = #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <select id="findChildJobs" resultType="map">
+        SELECT <include refid="jobColumns"/>
+        FROM job
+        WHERE parent_job_id =
+            #{parentJobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        ORDER BY created_at
+    </select>
+
+    <select id="findAllJobs" resultType="map">
+        SELECT <include refid="jobColumns"/>
+        FROM job
+        WHERE parent_job_id IS NULL
+        ORDER BY created_at DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countAllJobs" resultType="long">
+        SELECT COUNT(*) FROM job WHERE parent_job_id IS NULL
+    </select>
+
+    <select id="findTasksByJobId" resultType="map">
+        SELECT
+            BIN_TO_UUID(task.id) AS id,
+            task.task_key AS taskKey,
+            task.sequence_no AS sequenceNo,
+            task.title,
+            task.goal,
+            task.task_type AS taskType,
+            task.status,
+            task.execution_mode AS executionMode,
+            BIN_TO_UUID(latest_run.id) AS latestTaskRunId,
+            latest_run.status AS latestTaskRunStatus,
+            latest_run.result_summary AS resultSummary,
+            (
+                SELECT GROUP_CONCAT(
+                    parent_task.task_key
+                    ORDER BY parent_task.sequence_no
+                    SEPARATOR ','
+                )
+                FROM task_dependency dependency
+                JOIN task parent_task
+                  ON parent_task.id = dependency.depends_on_task_id
+                WHERE dependency.task_id = task.id
+            ) AS dependencyKeys,
+            task.version
+        FROM task
+        LEFT JOIN task_run latest_run
+          ON latest_run.id = (
+              SELECT run_candidate.id
+              FROM task_run run_candidate
+              WHERE run_candidate.task_id = task.id
+              ORDER BY run_candidate.attempt_no DESC
+              LIMIT 1
+          )
+        WHERE task.job_id =
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        ORDER BY task.sequence_no ASC
+    </select>
+
+    <update id="resumeTaskAfterClarification">
+        UPDATE task
+        SET task.status = 'READY',
+            task.contract_json = JSON_SET(
+                task.contract_json,
+                '$.clarification',
+                JSON_OBJECT(
+                    'answer',
+                    #{answer},
+                    'extractedFacts',
+                    CAST(#{extractedFactsJson} AS JSON),
+                    'answerSummary',
+                    #{answerSummary},
+                    'resolvedAt',
+                    DATE_FORMAT(CURRENT_TIMESTAMP(6), '%Y-%m-%dT%H:%i:%s.%fZ')
+                )
+            ),
+            task.version = task.version + 1
+        WHERE task.id =
+            #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND task.job_id =
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND task.status = 'WAITING_HUMAN'
+          AND EXISTS (
+              SELECT 1
+              FROM job
+              WHERE job.id = task.job_id
+                AND job.status IN ('WAITING_HUMAN', 'CREATED', 'RUNNING')
+          )
+    </update>
+
+    <update id="resumeJobAfterClarification">
+        UPDATE job
+        SET status = CASE
+                WHEN status = 'WAITING_HUMAN' THEN 'CREATED'
+                ELSE status
+            END,
+            version = version + 1
+        WHERE id =
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status IN ('WAITING_HUMAN', 'CREATED', 'RUNNING')
+    </update>
+</mapper>

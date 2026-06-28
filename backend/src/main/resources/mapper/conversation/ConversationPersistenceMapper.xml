@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.conversation.infrastructure.persistence.mybatis.ConversationPersistenceMapper">
+
+    <select id="countActiveAgentProfile" resultType="int">
+        SELECT COUNT(*)
+        FROM agent_profile
+        WHERE id = #{agentProfileId}
+          AND status = 'ACTIVE'
+    </select>
+
+    <insert id="insertConversation">
+        INSERT INTO conversation (
+            id, agent_profile_id, title, status, default_provider_id
+        ) VALUES (
+            #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{agentProfileId}, '新的对话', 'ACTIVE', #{providerId}
+        )
+    </insert>
+
+    <select id="findConversation" resultType="map">
+        SELECT
+            BIN_TO_UUID(id) AS id,
+            agent_profile_id AS agentProfileId,
+            title,
+            status,
+            default_provider_id AS defaultProviderId,
+            BIN_TO_UUID(active_job_id) AS activeJobId,
+            version,
+            created_at AS createdAt,
+            updated_at AS updatedAt
+        FROM conversation
+        WHERE id = #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <select id="findConversations" resultType="map">
+        SELECT
+            BIN_TO_UUID(id) AS id,
+            agent_profile_id AS agentProfileId,
+            title,
+            status,
+            default_provider_id AS defaultProviderId,
+            BIN_TO_UUID(active_job_id) AS activeJobId,
+            version,
+            created_at AS createdAt,
+            updated_at AS updatedAt
+        FROM conversation
+        WHERE status = 'ACTIVE'
+        ORDER BY updated_at DESC, created_at DESC
+    </select>
+
+    <sql id="messageColumns">
+        BIN_TO_UUID(id) AS id,
+        role,
+        message_type AS messageType,
+        content,
+        BIN_TO_UUID(job_id) AS jobId,
+        BIN_TO_UUID(task_run_id) AS taskRunId,
+        created_at AS createdAt
+    </sql>
+
+    <select id="findMessages" resultType="map">
+        SELECT <include refid="messageColumns"/>
+        FROM message
+        WHERE conversation_id =
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND message_type IN (
+              'TEXT',
+              'TASK_RESULT',
+              'TASK_FAILURE',
+              'CLARIFICATION_QUESTION',
+              'CLARIFICATION_DISAMBIGUATION',
+              'CONTROL_COMMAND_ACK'
+          )
+        ORDER BY created_at, id
+    </select>
+
+    <select id="findMessageByIdempotencyKey" resultType="map">
+        SELECT <include refid="messageColumns"/>
+        FROM message
+        WHERE idempotency_key = #{idempotencyKey}
+    </select>
+
+    <select id="findMessageById" resultType="map">
+        SELECT <include refid="messageColumns"/>
+        FROM message
+        WHERE id =
+            #{messageId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <insert id="insertMessage">
+        INSERT INTO message (
+            id, conversation_id, role, message_type, content,
+            idempotency_key, job_id, task_run_id, metadata_json
+        ) VALUES (
+            #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{role}, #{messageType}, #{content}, #{idempotencyKey},
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            JSON_OBJECT()
+        )
+    </insert>
+
+    <update id="linkMessageToJob">
+        UPDATE message
+        SET job_id =
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        WHERE id =
+            #{messageId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </update>
+
+    <update id="activateJobAndRetitle">
+        UPDATE conversation
+        SET active_job_id =
+                #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            title = CASE WHEN title = '新的对话' THEN #{title} ELSE title END,
+            version = version + 1
+        WHERE id =
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </update>
+</mapper>

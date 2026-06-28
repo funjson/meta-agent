@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.job.infrastructure.persistence.mybatis.ChildJobPersistenceMapper">
+
+    <select id="findChildJobId" resultType="string">
+        SELECT BIN_TO_UUID(child_job_id)
+        FROM job_derivation
+        WHERE idempotency_key = #{idempotencyKey}
+          AND child_job_id IS NOT NULL
+    </select>
+
+    <select id="lockParent" resultType="map">
+        SELECT
+            BIN_TO_UUID(id) AS jobId,
+            BIN_TO_UUID(root_job_id) AS rootJobId,
+            recursion_depth AS recursionDepth,
+            agent_profile_id AS agentProfileId,
+            BIN_TO_UUID(conversation_id) AS conversationId,
+            BIN_TO_UUID(source_message_id) AS sourceMessageId,
+            COALESCE(
+                JSON_UNQUOTE(JSON_EXTRACT(policy_json, '$.providerId')),
+                'fake'
+            ) AS providerId,
+            status
+        FROM job
+        WHERE id =
+            #{parentJobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        FOR UPDATE
+    </select>
+
+    <select id="countDirectChildren" resultType="long">
+        SELECT COUNT(*)
+        FROM job
+        WHERE parent_job_id =
+            #{parentJobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <select id="countTreeJobs" resultType="long">
+        SELECT COUNT(*)
+        FROM job
+        WHERE root_job_id =
+            #{rootJobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <insert id="insertDerivation">
+        INSERT INTO job_derivation (
+            id, parent_job_id, child_job_id,
+            origin_task_run_id, origin_loop_node_id,
+            idempotency_key, source_skill_id, source_skill_version,
+            status, request_json
+        ) VALUES (
+            #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{parentJobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{childJobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{originTaskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{originLoopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{idempotencyKey}, #{sourceSkillId}, #{sourceSkillVersion},
+            'RUNNING', CAST(#{requestJson} AS JSON)
+        )
+    </insert>
+
+    <update id="bindOriginLoopNode">
+        UPDATE loop_node
+        SET active_child_job_id =
+                #{childJobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            version = version + 1
+        WHERE id =
+            #{originLoopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'WAITING_CHILD_JOB'
+          AND active_child_job_id IS NULL
+    </update>
+
+    <select id="lockCompletion" resultType="map">
+        SELECT
+            BIN_TO_UUID(derivation.id) AS derivationId,
+            BIN_TO_UUID(derivation.parent_job_id) AS parentJobId,
+            BIN_TO_UUID(derivation.child_job_id) AS childJobId,
+            BIN_TO_UUID(derivation.origin_task_run_id) AS originTaskRunId,
+            BIN_TO_UUID(derivation.origin_loop_node_id) AS originLoopNodeId,
+            derivation.status AS derivationStatus,
+            child_job.status AS childJobStatus
+        FROM job_derivation derivation
+        JOIN job child_job ON child_job.id = derivation.child_job_id
+        WHERE derivation.child_job_id =
+            #{childJobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        FOR UPDATE
+    </select>
+
+    <select id="summarizeChildJob" resultType="string">
+        SELECT COALESCE(
+            GROUP_CONCAT(
+                latest_run.result_summary
+                ORDER BY task.sequence_no
+                SEPARATOR '\n'
+            ),
+            'Child Job 已完成'
+        )
+        FROM task
+        LEFT JOIN task_run latest_run
+          ON latest_run.id = (
+              SELECT candidate.id
+              FROM task_run candidate
+              WHERE candidate.task_id = task.id
+                AND candidate.status = 'COMPLETED'
+              ORDER BY candidate.attempt_no DESC
+              LIMIT 1
+          )
+        WHERE task.job_id =
+            #{childJobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <select id="countChildJobEvidence" resultType="int">
+        SELECT COUNT(*)
+        FROM evidence
+        JOIN task ON task.id = evidence.task_id
+        WHERE task.job_id =
+            #{childJobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <update id="completeDerivation">
+        UPDATE job_derivation
+        SET status = 'COMPLETED',
+            outcome_json = CAST(#{outcomeJson} AS JSON),
+            completed_at = CURRENT_TIMESTAMP(6)
+        WHERE child_job_id =
+            #{childJobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'RUNNING'
+    </update>
+
+    <update id="clearOriginLoopNode">
+        UPDATE loop_node
+        SET active_child_job_id = NULL,
+            version = version + 1
+        WHERE id =
+            #{originLoopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND active_child_job_id =
+            #{childJobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </update>
+</mapper>

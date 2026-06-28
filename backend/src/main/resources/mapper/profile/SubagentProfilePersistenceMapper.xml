@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.profile.infrastructure.persistence.mybatis.SubagentProfilePersistenceMapper">
+
+    <sql id="profileColumns">
+        id,
+        agent_profile_id AS agentProfileId,
+        version,
+        name,
+        role_prompt AS rolePrompt,
+        CAST(model_policy_json AS CHAR) AS modelPolicyJson,
+        CAST(skill_refs_json AS CHAR) AS skillRefsJson,
+        CAST(tool_allowlist_json AS CHAR) AS toolAllowlistJson,
+        CAST(authority_json AS CHAR) AS authorityJson,
+        status
+    </sql>
+
+    <select id="find" resultType="map">
+        SELECT <include refid="profileColumns"/>
+        FROM subagent_profile
+        WHERE id = #{id}
+          AND version = #{version}
+    </select>
+
+    <select id="findAll" resultType="map">
+        SELECT <include refid="profileColumns"/>
+        FROM subagent_profile
+        WHERE agent_profile_id = #{agentProfileId}
+        ORDER BY id, version DESC
+    </select>
+
+    <insert id="insert">
+        INSERT INTO subagent_profile (
+            id,
+            agent_profile_id,
+            version,
+            name,
+            role_prompt,
+            model_policy_json,
+            skill_refs_json,
+            tool_allowlist_json,
+            authority_json,
+            status
+        ) VALUES (
+            #{id},
+            #{agentProfileId},
+            #{version},
+            #{name},
+            #{rolePrompt},
+            CAST(#{modelPolicyJson} AS JSON),
+            CAST(#{skillRefsJson} AS JSON),
+            CAST(#{toolAllowlistJson} AS JSON),
+            CAST(#{authorityJson} AS JSON),
+            #{status}
+        )
+    </insert>
+</mapper>

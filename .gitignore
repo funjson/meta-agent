@@ -1,0 +1,27 @@
+# Secrets and local overrides
+.env
+.env.local
+application-local.yml
+
+# Java
+target/
+*.log
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+
+# Frontend
+node_modules/
+dist/
+.vite/
+
+# Runtime data
+.data/
+artifacts/
+
+# OS
+.DS_Store
+Thumbs.db
+

@@ -1,0 +1,498 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.observability.infrastructure.persistence.mybatis.AgentPathMapper">
+
+    <resultMap id="agentPathNodeMap"
+               type="com.funjson.metaagent.observability.api.AgentPathNode">
+        <constructor>
+            <arg column="id" javaType="string"/>
+            <arg column="parentId" javaType="string"/>
+            <arg column="nodeType" javaType="string"/>
+            <arg column="label" javaType="string"/>
+            <arg column="status" javaType="string"/>
+            <arg column="summary" javaType="string"/>
+            <arg column="occurredAt" javaType="java.time.Instant"/>
+        </constructor>
+    </resultMap>
+
+    <sql id="conversationFilter">
+        job.conversation_id =
+        #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </sql>
+
+    <select id="findConversationNode" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('conversation:', BIN_TO_UUID(id)) AS id,
+            NULL AS parentId,
+            'CONVERSATION' AS nodeType,
+            title AS label,
+            status,
+            '用户与 Agent 的交互上下文' AS summary,
+            created_at AS occurredAt
+        FROM conversation
+        WHERE id =
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <select id="findMessageNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('message:', BIN_TO_UUID(id)) AS id,
+            CONCAT('conversation:', BIN_TO_UUID(conversation_id)) AS parentId,
+            'MESSAGE' AS nodeType,
+            CASE
+                WHEN role = 'USER' THEN '用户消息'
+                WHEN message_type = 'CLARIFICATION_QUESTION' THEN 'Agent 澄清问题'
+                ELSE 'Agent 用户可见回复'
+            END AS label,
+            message_type AS status,
+            LEFT(REPLACE(REPLACE(content, '\r', ' '), '\n', ' '), 180) AS summary,
+            created_at AS occurredAt
+        FROM message
+        WHERE conversation_id =
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        ORDER BY created_at
+    </select>
+
+    <select id="findControlTurnNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('control-turn:', BIN_TO_UUID(id)) AS id,
+            CONCAT('message:', BIN_TO_UUID(source_message_id)) AS parentId,
+            'CONTROL_TURN' AS nodeType,
+            'ControlTurn · 控制轮次' AS label,
+            status,
+            CONCAT(
+                '幂等控制轮次',
+                CASE
+                    WHEN job_id IS NULL THEN ''
+                    ELSE CONCAT(' · Job ', LEFT(BIN_TO_UUID(job_id), 8))
+                END
+            ) AS summary,
+            created_at AS occurredAt
+        FROM control_turn
+        WHERE conversation_id =
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        ORDER BY created_at
+    </select>
+
+    <select id="findControlDecisionNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('control:', BIN_TO_UUID(id)) AS id,
+            CONCAT('control-turn:', BIN_TO_UUID(control_turn_id)) AS parentId,
+            'CONTROL_DECISION' AS nodeType,
+            'Control · 意图识别' AS label,
+            intent_type AS status,
+            decision_summary AS summary,
+            created_at AS occurredAt
+        FROM control_decision
+        WHERE conversation_id =
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        ORDER BY created_at
+    </select>
+
+    <select id="findJobNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('job:', BIN_TO_UUID(job.id)) AS id,
+            COALESCE(
+                CASE
+                    WHEN job.parent_job_id IS NOT NULL
+                        THEN CONCAT(
+                            'loop-node:',
+                            BIN_TO_UUID(derivation.origin_loop_node_id)
+                        )
+                    ELSE NULL
+                END,
+                CONCAT('control:', BIN_TO_UUID(decision_record.id)),
+                CONCAT('conversation:', BIN_TO_UUID(job.conversation_id))
+            ) AS parentId,
+            'JOB' AS nodeType,
+            CASE
+                WHEN job.template_id IS NOT NULL THEN 'Job · 模板任务'
+                WHEN job.parent_job_id IS NOT NULL THEN 'Job · 子任务'
+                ELSE 'Job · 根任务'
+            END AS label,
+            job.status,
+            CONCAT(
+                '目标摘要：',
+                LEFT(REPLACE(REPLACE(job.goal_summary, '\r', ' '), '\n', ' '), 180)
+            ) AS summary,
+            job.created_at AS occurredAt
+        FROM job
+        LEFT JOIN control_decision decision_record ON decision_record.job_id = job.id
+        LEFT JOIN job_derivation derivation ON derivation.child_job_id = job.id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY job.created_at
+    </select>
+
+    <select id="findTaskNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('task:', BIN_TO_UUID(task.id)) AS id,
+            CONCAT('job:', BIN_TO_UUID(task.job_id)) AS parentId,
+            'TASK' AS nodeType,
+            task.title AS label,
+            task.status,
+            LEFT(REPLACE(REPLACE(task.goal, '\r', ' '), '\n', ' '), 180) AS summary,
+            task.created_at AS occurredAt
+        FROM task
+        JOIN job ON job.id = task.job_id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY task.created_at
+    </select>
+
+    <select id="findClarificationNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('clarification:', BIN_TO_UUID(request.id)) AS id,
+            COALESCE(
+                CASE
+                    WHEN request.loop_node_id IS NOT NULL
+                        THEN CONCAT(
+                            'loop-node:',
+                            BIN_TO_UUID(request.loop_node_id)
+                        )
+                    ELSE NULL
+                END,
+                CASE
+                    WHEN request.task_id IS NOT NULL
+                        THEN CONCAT('task:', BIN_TO_UUID(request.task_id))
+                    ELSE NULL
+                END,
+                CASE
+                    WHEN request.job_id IS NOT NULL
+                        THEN CONCAT('job:', BIN_TO_UUID(request.job_id))
+                    ELSE NULL
+                END,
+                CONCAT('conversation:', BIN_TO_UUID(request.conversation_id))
+            ) AS parentId,
+            'CLARIFICATION_REQUEST' AS nodeType,
+            CONCAT('Clarification · ', request.reason_type) AS label,
+            request.status,
+            CONCAT(
+                LEFT(
+                    REPLACE(REPLACE(request.question, '\r', ' '), '\n', ' '),
+                    180
+                ),
+                ' · ',
+                request.source_type
+            ) AS summary,
+            request.created_at AS occurredAt
+        FROM clarification_request request
+        WHERE request.conversation_id =
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        ORDER BY request.created_at
+    </select>
+
+    <select id="findTaskRunNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('task-run:', BIN_TO_UUID(run.id)) AS id,
+            CONCAT('task:', BIN_TO_UUID(run.task_id)) AS parentId,
+            'TASK_RUN' AS nodeType,
+            CONCAT('TaskRun · 执行 ', run.run_type) AS label,
+            run.status,
+            LEFT(REPLACE(REPLACE(task.goal, '\r', ' '), '\n', ' '), 180) AS summary,
+            run.started_at AS occurredAt
+        FROM task_run run
+        JOIN task ON task.id = run.task_id
+        JOIN job ON job.id = task.job_id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY run.started_at
+    </select>
+
+    <select id="findLoopRunNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('loop-run:', BIN_TO_UUID(loop_record.id)) AS id,
+            CONCAT(
+                'task-run:',
+                BIN_TO_UUID(loop_record.task_run_id)
+            ) AS parentId,
+            'LOOP_RUN' AS nodeType,
+            CONCAT(
+                'LoopRun · ',
+                loop_record.parent_type
+            ) AS label,
+            loop_record.status,
+            CONCAT(
+                'Loop Kernel 执行闭环 · 递归深度 ',
+                loop_record.recursion_depth
+            ) AS summary,
+            loop_record.started_at AS occurredAt
+        FROM loop_run loop_record
+        JOIN task_run run ON run.id = loop_record.task_run_id
+        JOIN task ON task.id = run.task_id
+        JOIN job ON job.id = task.job_id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY loop_record.started_at
+    </select>
+
+    <select id="findLoopNodeNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('loop-node:', BIN_TO_UUID(node.id)) AS id,
+            CASE
+                WHEN node.parent_node_id IS NULL
+                    THEN CONCAT('loop-run:', BIN_TO_UUID(node.loop_run_id))
+                ELSE CONCAT('loop-node:', BIN_TO_UUID(node.parent_node_id))
+            END AS parentId,
+            'LOOP_NODE' AS nodeType,
+            CONCAT(
+                'LoopNode #',
+                node.iteration_no,
+                ' · ',
+                CASE
+                    WHEN node.parent_node_id IS NOT NULL
+                         AND JSON_UNQUOTE(JSON_EXTRACT(
+                                 node.input_json,
+                                 '$.inheritedFeedback'
+                             )) LIKE '用户已补充澄清信息%'
+                        THEN '澄清恢复'
+                    WHEN node.parent_node_id IS NOT NULL
+                        THEN '子循环调整'
+                    ELSE node.action_type
+                END
+            ) AS label,
+            node.status,
+            CASE
+                WHEN node.parent_node_id IS NOT NULL
+                     AND JSON_UNQUOTE(JSON_EXTRACT(
+                             node.input_json,
+                             '$.inheritedFeedback'
+                         )) LIKE '用户已补充澄清信息%'
+                    THEN CONCAT(
+                        '澄清恢复后重新生成结果 · 目标：',
+                        LEFT(REPLACE(REPLACE(node.goal, '\r', ' '), '\n', ' '), 130)
+                    )
+                WHEN node.parent_node_id IS NOT NULL
+                    THEN CONCAT(
+                        '根据父节点反馈调整后继续执行 · 目标：',
+                        LEFT(REPLACE(REPLACE(node.goal, '\r', ' '), '\n', ' '), 130)
+                    )
+                ELSE CONCAT(
+                    '阶段 ',
+                    node.current_phase,
+                    ' · 目标：',
+                    LEFT(REPLACE(REPLACE(node.goal, '\r', ' '), '\n', ' '), 130)
+                )
+            END AS summary,
+            node.started_at AS occurredAt
+        FROM loop_node node
+        JOIN loop_run loop_record ON loop_record.id = node.loop_run_id
+        JOIN task_run run ON run.id = loop_record.task_run_id
+        JOIN task ON task.id = run.task_id
+        JOIN job ON job.id = task.job_id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY node.started_at
+    </select>
+
+    <select id="findLoopPhaseNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('loop-phase:', BIN_TO_UUID(phase.id)) AS id,
+            CONCAT('loop-node:', BIN_TO_UUID(phase.loop_node_id)) AS parentId,
+            'LOOP_PHASE' AS nodeType,
+            CONCAT(
+                CASE phase.phase_type
+                    WHEN 'CONTEXT_BUILD' THEN '上下文构建'
+                    WHEN 'PLANNING' THEN '规划'
+                    WHEN 'ACTION_PREPARATION' THEN '动作准备'
+                    WHEN 'ACTION_EXECUTION' THEN '动作执行'
+                    WHEN 'OBSERVATION' THEN '感知'
+                    WHEN 'EVALUATION' THEN '评估'
+                    WHEN 'ADJUSTMENT' THEN '调整'
+                    ELSE phase.phase_type
+                END,
+                ' · Phase'
+            ) AS label,
+            phase.status,
+            phase.summary,
+            phase.started_at AS occurredAt
+        FROM loop_node_phase phase
+        JOIN loop_node node ON node.id = phase.loop_node_id
+        JOIN loop_run loop_record ON loop_record.id = node.loop_run_id
+        JOIN task_run run ON run.id = loop_record.task_run_id
+        JOIN task ON task.id = run.task_id
+        JOIN job ON job.id = task.job_id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY node.started_at, phase.sequence_no
+    </select>
+
+    <select id="findModelCallNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('model-call:', BIN_TO_UUID(call_record.id)) AS id,
+            CONCAT('loop-node:', BIN_TO_UUID(call_record.loop_node_id)) AS parentId,
+            'MODEL_CALL' AS nodeType,
+            CONCAT('模型调用 · ', call_record.provider) AS label,
+            call_record.status,
+            CONCAT(call_record.model, ' · ', call_record.latency_ms, 'ms') AS summary,
+            call_record.created_at AS occurredAt
+        FROM model_call call_record
+        JOIN loop_node node ON node.id = call_record.loop_node_id
+        JOIN loop_run loop_record ON loop_record.id = node.loop_run_id
+        JOIN task_run run ON run.id = loop_record.task_run_id
+        JOIN task ON task.id = run.task_id
+        JOIN job ON job.id = task.job_id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY call_record.created_at
+    </select>
+
+    <select id="findToolInvocationNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('tool-call:', BIN_TO_UUID(invocation.id)) AS id,
+            CONCAT(
+                'loop-node:',
+                BIN_TO_UUID(invocation.loop_node_id)
+            ) AS parentId,
+            'TOOL_CALL' AS nodeType,
+            CONCAT('Tool · ', invocation.tool_id) AS label,
+            invocation.status,
+            COALESCE(
+                invocation.error_message,
+                LEFT(
+                    REPLACE(
+                        REPLACE(CAST(invocation.result_json AS CHAR), '\r', ' '),
+                        '\n',
+                        ' '
+                    ),
+                    180
+                ),
+                invocation.tool_type
+            ) AS summary,
+            invocation.created_at AS occurredAt
+        FROM tool_invocation invocation
+        JOIN job ON job.id = invocation.job_id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY invocation.created_at
+    </select>
+
+    <select id="findCapabilityLoadNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT(
+                'capability-load:',
+                BIN_TO_UUID(load_record.id)
+            ) AS id,
+            CONCAT(
+                'loop-node:',
+                BIN_TO_UUID(load_record.loop_node_id)
+            ) AS parentId,
+            'CAPABILITY_LOAD' AS nodeType,
+            CONCAT(
+                'Skill · ',
+                source.name
+            ) AS label,
+            load_record.status,
+            CONCAT(
+                load_record.capability_type,
+                ' · ',
+                load_record.scope_root_type,
+                CASE
+                    WHEN load_record.inherited_from_load_id IS NULL
+                        THEN ' · DIRECT'
+                    ELSE ' · INHERITED'
+                END
+            ) AS summary,
+            load_record.created_at AS occurredAt
+        FROM capability_load load_record
+        JOIN capability_source source
+          ON source.id = load_record.source_id
+         AND source.version = load_record.source_version
+        JOIN loop_node node ON node.id = load_record.loop_node_id
+        JOIN loop_run loop_record ON loop_record.id = node.loop_run_id
+        JOIN task_run run ON run.id = loop_record.task_run_id
+        JOIN task ON task.id = run.task_id
+        JOIN job ON job.id = task.job_id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY load_record.created_at
+    </select>
+
+    <select id="findCheckpointNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('checkpoint:', BIN_TO_UUID(checkpoint.id)) AS id,
+            CASE
+                WHEN checkpoint.loop_node_id IS NOT NULL
+                    THEN CONCAT('loop-node:', BIN_TO_UUID(checkpoint.loop_node_id))
+                ELSE CONCAT('task-run:', BIN_TO_UUID(checkpoint.task_run_id))
+            END AS parentId,
+            'CHECKPOINT' AS nodeType,
+            CONCAT('Checkpoint · ', checkpoint.checkpoint_type) AS label,
+            CASE WHEN checkpoint.restorable THEN 'RESTORABLE' ELSE 'AUDIT_ONLY' END AS status,
+            '可恢复状态快照' AS summary,
+            checkpoint.created_at AS occurredAt
+        FROM checkpoint
+        JOIN task_run run ON run.id = checkpoint.task_run_id
+        JOIN task ON task.id = run.task_id
+        JOIN job ON job.id = task.job_id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY checkpoint.created_at
+    </select>
+
+    <select id="findEvidenceNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('evidence:', BIN_TO_UUID(evidence.id)) AS id,
+            CASE
+                WHEN evidence.loop_node_id IS NOT NULL
+                    THEN CONCAT('loop-node:', BIN_TO_UUID(evidence.loop_node_id))
+                ELSE CONCAT('task-run:', BIN_TO_UUID(evidence.task_run_id))
+            END AS parentId,
+            'EVIDENCE' AS nodeType,
+            CONCAT('完成证据 · ', evidence.evidence_type) AS label,
+            evidence.result AS status,
+            evidence.subject_ref AS summary,
+            evidence.created_at AS occurredAt
+        FROM evidence
+        JOIN task_run run ON run.id = evidence.task_run_id
+        JOIN task ON task.id = run.task_id
+        JOIN job ON job.id = task.job_id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY evidence.created_at
+    </select>
+
+    <select id="findRecoveryAttemptNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT(
+                'recovery-attempt:',
+                BIN_TO_UUID(attempt.id)
+            ) AS id,
+            CASE
+                WHEN attempt.checkpoint_id IS NOT NULL
+                    THEN CONCAT(
+                        'checkpoint:',
+                        BIN_TO_UUID(attempt.checkpoint_id)
+                    )
+                ELSE CONCAT(
+                    'task-run:',
+                    BIN_TO_UUID(attempt.task_run_id)
+                )
+            END AS parentId,
+            'RECOVERY_ATTEMPT' AS nodeType,
+            CONCAT(
+                'Recovery · ',
+                attempt.disposition
+            ) AS label,
+            attempt.status,
+            CONCAT(
+                attempt.interruption_type,
+                ' · ',
+                attempt.decision_code
+            ) AS summary,
+            attempt.requested_at AS occurredAt
+        FROM recovery_attempt attempt
+        JOIN task_run run ON run.id = attempt.task_run_id
+        JOIN task ON task.id = run.task_id
+        JOIN job ON job.id = task.job_id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY attempt.requested_at
+    </select>
+
+    <select id="findJobCompletionNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('job-completion:', BIN_TO_UUID(event.id)) AS id,
+            CONCAT('job:', BIN_TO_UUID(event.job_id)) AS parentId,
+            'JOB_COMPLETION' AS nodeType,
+            'Job · 完成验收' AS label,
+            event.event_type AS status,
+            'Job 层根据 TaskGraph、结果与证据收敛 Job 终态' AS summary,
+            event.created_at AS occurredAt
+        FROM runtime_event event
+        JOIN job ON job.id = event.job_id
+        WHERE <include refid="conversationFilter"/>
+          AND event.event_type IN ('JOB_COMPLETED', 'JOB_FAILED')
+        ORDER BY event.created_at
+    </select>
+</mapper>

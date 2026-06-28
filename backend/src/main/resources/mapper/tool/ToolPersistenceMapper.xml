@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.tool.infrastructure.persistence.mybatis.ToolPersistenceMapper">
+
+    <sql id="scriptToolColumns">
+        package_id AS packageId,
+        package_version AS packageVersion,
+        resource_path AS resourcePath,
+        JSON_UNQUOTE(JSON_EXTRACT(executable_json, '$.toolId')) AS toolId,
+        JSON_UNQUOTE(JSON_EXTRACT(executable_json, '$.interpreter')) AS interpreter,
+        COALESCE(
+            CAST(JSON_EXTRACT(executable_json, '$.argumentSchema') AS CHAR),
+            '{}'
+        ) AS argumentSchemaJson,
+        COALESCE(
+            JSON_UNQUOTE(JSON_EXTRACT(executable_json, '$.sideEffectClass')),
+            'UNKNOWN'
+        ) AS sideEffectClass,
+        content_text AS contentText
+    </sql>
+
+    <select id="findScriptTools" resultType="map">
+        SELECT <include refid="scriptToolColumns"/>
+        FROM skill_resource
+        WHERE resource_type = 'SCRIPT'
+          AND executable_json IS NOT NULL
+        ORDER BY package_id, package_version, resource_path
+    </select>
+
+    <select id="findScriptTool" resultType="map">
+        SELECT <include refid="scriptToolColumns"/>
+        FROM skill_resource
+        WHERE resource_type = 'SCRIPT'
+          AND executable_json IS NOT NULL
+          AND JSON_UNQUOTE(JSON_EXTRACT(executable_json, '$.toolId'))
+              = #{toolId}
+        ORDER BY package_version DESC
+        LIMIT 1
+    </select>
+
+    <select id="findConversationIdByJobId" resultType="string">
+        SELECT BIN_TO_UUID(conversation_id)
+        FROM job
+        WHERE id =
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <select id="findInvocationByIdempotencyKey" resultType="map">
+        SELECT
+            BIN_TO_UUID(id) AS id,
+            tool_id AS toolId,
+            status,
+            CAST(result_json AS CHAR) AS resultJson,
+            error_message AS errorMessage
+        FROM tool_invocation
+        WHERE idempotency_key = #{idempotencyKey}
+    </select>
+
+    <insert id="insertInvocation">
+        INSERT INTO tool_invocation (
+            id, job_id, task_id, task_run_id, loop_run_id, loop_node_id,
+            tool_id, tool_type, idempotency_key, arguments_json, status
+        ) VALUES (
+            #{invocationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{toolId},
+            #{toolType},
+            #{idempotencyKey},
+            CAST(#{argumentsJson} AS JSON),
+            'PENDING'
+        )
+    </insert>
+
+    <update id="markRunning">
+        UPDATE tool_invocation
+        SET status = 'RUNNING',
+            started_at = CURRENT_TIMESTAMP(6)
+        WHERE id =
+            #{invocationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'PENDING'
+    </update>
+
+    <update id="complete">
+        UPDATE tool_invocation
+        SET status = 'COMPLETED',
+            result_json = CAST(#{resultJson} AS JSON),
+            completed_at = CURRENT_TIMESTAMP(6)
+        WHERE id =
+            #{invocationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'RUNNING'
+    </update>
+
+    <update id="attachClarification">
+        UPDATE tool_invocation
+        SET clarification_request_id =
+            #{clarificationRequestId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        WHERE id =
+            #{invocationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </update>
+
+    <update id="fail">
+        UPDATE tool_invocation
+        SET status = 'FAILED',
+            error_message = #{errorMessage},
+            result_json = CAST(#{resultJson} AS JSON),
+            completed_at = CURRENT_TIMESTAMP(6)
+        WHERE id =
+            #{invocationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status IN ('PENDING', 'RUNNING')
+    </update>
+</mapper>

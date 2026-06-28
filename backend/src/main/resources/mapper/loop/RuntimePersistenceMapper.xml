@@ -1,0 +1,667 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.loop.infrastructure.persistence.mybatis.RuntimePersistenceMapper">
+
+    <select id="findCommandResource" resultType="string">
+        SELECT BIN_TO_UUID(resource_id)
+        FROM command_deduplication
+        WHERE idempotency_key = #{idempotencyKey}
+          AND command_type = #{commandType}
+    </select>
+
+    <select id="lockJob" resultType="map">
+        SELECT BIN_TO_UUID(job.id) AS id,
+               job.status,
+               job.version,
+               COALESCE(
+                   JSON_UNQUOTE(
+                       JSON_EXTRACT(job.policy_json, '$.providerId')
+                   ),
+                   'fake'
+               ) AS providerId,
+               JSON_UNQUOTE(
+                   JSON_EXTRACT(
+                       profile.config_json,
+                       '$.execution.rootCapability.id'
+                   )
+               ) AS rootCapabilityId,
+               CAST(
+                   JSON_UNQUOTE(
+                       JSON_EXTRACT(
+                           profile.config_json,
+                           '$.execution.rootCapability.version'
+                       )
+                   ) AS UNSIGNED
+               ) AS rootCapabilityVersion
+        FROM job
+        LEFT JOIN agent_profile profile
+          ON profile.id = job.agent_profile_id
+        WHERE job.id = #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        FOR UPDATE
+    </select>
+
+    <select id="lockReadyTask" resultType="map">
+        SELECT
+            BIN_TO_UUID(candidate.id) AS id,
+            candidate.goal,
+            candidate.status,
+            candidate.version,
+            (
+                SELECT GROUP_CONCAT(
+                    CONCAT(
+                        parent_task.title,
+                        ': ',
+                        COALESCE(
+                            (
+                                SELECT parent_run.result_summary
+                                FROM task_run parent_run
+                                WHERE parent_run.task_id = parent_task.id
+                                  AND parent_run.status = 'COMPLETED'
+                                ORDER BY parent_run.attempt_no DESC
+                                LIMIT 1
+                            ),
+                            '已完成'
+                        )
+                    )
+                    ORDER BY parent_task.sequence_no
+                    SEPARATOR '\n'
+                )
+                FROM task_dependency dependency
+                JOIN task parent_task
+                  ON parent_task.id = dependency.depends_on_task_id
+                WHERE dependency.task_id = candidate.id
+            ) AS dependencyContext
+        FROM task candidate
+        WHERE candidate.job_id =
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND candidate.status = 'READY'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM task_dependency dependency
+              JOIN task parent_task
+                ON parent_task.id = dependency.depends_on_task_id
+              WHERE dependency.task_id = candidate.id
+                AND parent_task.status != 'COMPLETED'
+          )
+        ORDER BY candidate.sequence_no ASC
+        LIMIT 1
+        FOR UPDATE
+    </select>
+
+    <select id="lockReadyTasks" resultType="map">
+        SELECT
+            BIN_TO_UUID(candidate.id) AS id,
+            candidate.goal,
+            candidate.status,
+            candidate.version,
+            (
+                SELECT GROUP_CONCAT(
+                    CONCAT(
+                        parent_task.title,
+                        ': ',
+                        COALESCE(
+                            (
+                                SELECT parent_run.result_summary
+                                FROM task_run parent_run
+                                WHERE parent_run.task_id = parent_task.id
+                                  AND parent_run.status = 'COMPLETED'
+                                ORDER BY parent_run.attempt_no DESC
+                                LIMIT 1
+                            ),
+                            '已完成'
+                        )
+                    )
+                    ORDER BY parent_task.sequence_no
+                    SEPARATOR '\n'
+                )
+                FROM task_dependency dependency
+                JOIN task parent_task
+                  ON parent_task.id = dependency.depends_on_task_id
+                WHERE dependency.task_id = candidate.id
+            ) AS dependencyContext
+        FROM task candidate
+        WHERE candidate.job_id =
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND candidate.status = 'READY'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM task_dependency dependency
+              JOIN task parent_task
+                ON parent_task.id = dependency.depends_on_task_id
+              WHERE dependency.task_id = candidate.id
+                AND parent_task.status != 'COMPLETED'
+          )
+        ORDER BY candidate.sequence_no ASC
+        LIMIT #{limit}
+        FOR UPDATE SKIP LOCKED
+    </select>
+
+    <select id="nextAttemptNo" resultType="int">
+        SELECT COALESCE(MAX(attempt_no), 0) + 1
+        FROM task_run
+        WHERE task_id = #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <update id="updateJobStatus">
+        UPDATE job
+        SET status = #{status}, version = version + 1
+        WHERE id = #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </update>
+
+    <update id="updateTaskStatus">
+        UPDATE task
+        SET status = #{status},
+            active_task_run_id =
+                #{activeTaskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            version = version + 1
+        WHERE id = #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </update>
+
+    <insert id="insertTaskRun">
+        INSERT INTO task_run (id, task_id, run_type, status, attempt_no)
+        VALUES (
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            'LOOP', 'RUNNING', #{attemptNo}
+        )
+    </insert>
+
+    <insert id="insertTaskRunDispatch">
+        INSERT INTO task_run_dispatch (
+            id,
+            job_id,
+            task_id,
+            task_run_id,
+            status
+        ) VALUES (
+            #{dispatchId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            'PENDING'
+        )
+    </insert>
+
+    <update id="claimTaskRunDispatch">
+        UPDATE task_run_dispatch
+        SET status = 'CLAIMED',
+            worker_id = #{workerId},
+            claimed_at = CURRENT_TIMESTAMP(6),
+            attempt_count = attempt_count + 1
+        WHERE id =
+            #{dispatchId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'PENDING'
+          AND available_at &lt;= CURRENT_TIMESTAMP(6)
+    </update>
+
+    <update id="finishTaskRunDispatch">
+        UPDATE task_run_dispatch
+        SET status = #{status},
+            last_error = #{lastError},
+            completed_at = CURRENT_TIMESTAMP(6)
+        WHERE id =
+            #{dispatchId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'CLAIMED'
+    </update>
+
+    <insert id="insertLoopRun">
+        INSERT INTO loop_run (
+            id, task_run_id, parent_type, parent_id, status,
+            policy_json, scoped_context_json, recursion_depth
+        ) VALUES (
+            #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{parentType},
+            #{parentId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            'RUNNING',
+            CAST(#{policyJson} AS JSON),
+            CAST(#{scopedContextJson} AS JSON),
+            #{recursionDepth}
+        )
+    </insert>
+
+    <insert id="insertLoopNode">
+        INSERT INTO loop_node (
+            id, loop_run_id, parent_node_id, node_type, action_type, goal,
+            status, current_phase, depth, iteration_no, side_effect_class,
+            idempotency_key, input_json, scoped_context_json, decision_json
+        ) VALUES (
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{parentNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            'ATOMIC', 'MODEL_CALL', #{goal},
+            'RUNNING', 'CONTEXT_BUILD', #{depth}, #{iterationNo}, 'NONE',
+            #{idempotencyKey},
+            CAST(#{inputJson} AS JSON),
+            JSON_OBJECT(),
+            JSON_OBJECT(
+                'type', 'PENDING',
+                'provider', #{providerId}
+            )
+        )
+    </insert>
+
+    <select id="countLoopNodes" resultType="int">
+        SELECT COUNT(*)
+        FROM loop_node
+        WHERE loop_run_id =
+            #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <select id="findLoopNodeStatus" resultType="string">
+        SELECT status
+        FROM loop_node
+        WHERE id =
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <update id="updateLoopNodeDecision">
+        UPDATE loop_node
+        SET action_type = #{actionType},
+            decision_json = CAST(#{decisionJson} AS JSON),
+            version = version + 1
+        WHERE id =
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </update>
+
+    <insert id="insertCompletedPhase">
+        INSERT INTO loop_node_phase (
+            id, loop_node_id, phase_type, sequence_no, status,
+            summary, input_json, output_json, completed_at
+        ) VALUES (
+            #{phaseId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{phaseType}, #{sequenceNo}, 'COMPLETED',
+            #{summary}, CAST(#{inputJson} AS JSON),
+            CAST(#{outputJson} AS JSON), CURRENT_TIMESTAMP(6)
+        )
+    </insert>
+
+    <insert id="insertRunningPhase">
+        INSERT INTO loop_node_phase (
+            id, loop_node_id, phase_type, sequence_no, status,
+            summary, input_json
+        ) VALUES (
+            #{phaseId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{phaseType}, #{sequenceNo}, 'RUNNING',
+            #{summary}, CAST(#{inputJson} AS JSON)
+        )
+    </insert>
+
+    <update id="completePhase">
+        UPDATE loop_node_phase
+        SET status = 'COMPLETED',
+            summary = #{summary},
+            output_json = CAST(#{outputJson} AS JSON),
+            completed_at = CURRENT_TIMESTAMP(6),
+            version = version + 1
+        WHERE id =
+            #{phaseId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'RUNNING'
+    </update>
+
+    <update id="failPhase">
+        UPDATE loop_node_phase
+        SET status = 'FAILED',
+            summary = #{summary},
+            output_json = CAST(#{outputJson} AS JSON),
+            completed_at = CURRENT_TIMESTAMP(6),
+            version = version + 1
+        WHERE id =
+            #{phaseId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'RUNNING'
+    </update>
+
+    <update id="reopenPhaseForRecovery">
+        UPDATE loop_node_phase
+        SET status = 'RUNNING',
+            summary = '恢复执行：安全重试既有动作阶段',
+            output_json = NULL,
+            completed_at = NULL,
+            version = version + 1
+        WHERE id =
+            #{phaseId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND phase_type = 'ACTION_EXECUTION'
+          AND status IN ('RUNNING', 'COMPLETED', 'FAILED')
+    </update>
+
+    <update id="updateLoopNodeCurrentPhase">
+        UPDATE loop_node
+        SET current_phase = #{phaseType},
+            version = version + 1
+        WHERE id =
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </update>
+
+    <update id="markLoopNodeWaitingChildren">
+        UPDATE loop_node
+        SET status = 'WAITING_CHILDREN',
+            current_phase = 'ADJUSTMENT',
+            version = version + 1
+        WHERE id =
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'RUNNING'
+    </update>
+
+    <update id="markLoopNodeWaitingChildJob">
+        UPDATE loop_node
+        SET status = 'WAITING_CHILD_JOB',
+            current_phase = 'ACTION_EXECUTION',
+            version = version + 1
+        WHERE id =
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'RUNNING'
+    </update>
+
+    <update id="markTaskRunWaitingChildJob">
+        UPDATE task_run
+        SET status = 'WAITING_CHILD_JOB',
+            version = version + 1
+        WHERE id =
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'RUNNING'
+    </update>
+
+    <update id="markLoopNodeWaitingHuman">
+        UPDATE loop_node
+        SET status = 'WAITING_HUMAN',
+            current_phase = 'ACTION_EXECUTION',
+            version = version + 1
+        WHERE id =
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'RUNNING'
+    </update>
+
+    <update id="markTaskRunWaitingHuman">
+        UPDATE task_run
+        SET status = 'WAITING_HUMAN',
+            version = version + 1
+        WHERE id =
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'RUNNING'
+    </update>
+
+    <update id="resumeLoopNode">
+        UPDATE loop_node
+        SET status = 'RUNNING',
+            current_phase = 'OBSERVATION',
+            version = version + 1
+        WHERE id =
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status IN (
+              'WAITING_CHILDREN',
+              'WAITING_CHILD_JOB',
+              'WAITING_HUMAN'
+          )
+    </update>
+
+    <update id="resumeTaskRunFromChildJob">
+        UPDATE task_run
+        SET status = 'RUNNING',
+            version = version + 1
+        WHERE id =
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'WAITING_CHILD_JOB'
+    </update>
+
+    <update id="resumeTaskRunFromHuman">
+        UPDATE task_run
+        SET status = 'RUNNING',
+            version = version + 1
+        WHERE id =
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'WAITING_HUMAN'
+    </update>
+
+    <update id="setLoopRootNode">
+        UPDATE loop_run
+        SET root_node_id =
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        WHERE id = #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </update>
+
+    <insert id="insertCheckpoint">
+        INSERT INTO checkpoint (
+            id, task_run_id, loop_run_id, loop_node_id, sequence_no,
+            checkpoint_type, state_json, event_offset, checksum, restorable
+        ) VALUES (
+            #{checkpointId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{sequenceNo}, #{checkpointType}, CAST(#{stateJson} AS JSON),
+            #{eventOffset},
+            LOWER(SHA2(CAST(CAST(#{stateJson} AS JSON) AS CHAR), 256)),
+            TRUE
+        )
+    </insert>
+
+    <select id="nextCheckpointSequence" resultType="long">
+        SELECT COALESCE(MAX(sequence_no), 0) + 1
+        FROM checkpoint
+        WHERE task_run_id =
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <update id="updateLatestCheckpoint">
+        UPDATE task_run
+        SET latest_checkpoint_id =
+                #{checkpointId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            version = version + 1
+        WHERE id = #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </update>
+
+    <update id="completeLoopNode">
+        UPDATE loop_node
+        SET status = 'COMPLETED',
+            observation_json = CAST(#{observationJson} AS JSON),
+            output_json = CAST(#{outputJson} AS JSON),
+            completed_at = CURRENT_TIMESTAMP(6),
+            version = version + 1
+        WHERE id = #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status IN ('RUNNING', 'WAITING_CHILDREN')
+    </update>
+
+    <update id="completeWaitingLoopNodes">
+        UPDATE loop_node
+        SET status = 'COMPLETED',
+            observation_json = CAST(#{observationJson} AS JSON),
+            output_json = CAST(#{outputJson} AS JSON),
+            completed_at = CURRENT_TIMESTAMP(6),
+            version = version + 1
+        WHERE loop_run_id =
+            #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'WAITING_CHILDREN'
+    </update>
+
+    <update id="completeLoopRun">
+        UPDATE loop_run
+        SET status = 'COMPLETED',
+            completed_at = CURRENT_TIMESTAMP(6),
+            version = version + 1
+        WHERE id = #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </update>
+
+    <update id="completeTaskRun">
+        UPDATE task_run
+        SET status = 'COMPLETED',
+            result_summary = #{resultSummary},
+            completed_at = CURRENT_TIMESTAMP(6),
+            version = version + 1
+        WHERE id = #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'RUNNING'
+    </update>
+
+    <update id="failTaskRun">
+        UPDATE task_run
+        SET status = 'FAILED',
+            result_summary = #{failureSummary},
+            completed_at = CURRENT_TIMESTAMP(6),
+            version = version + 1
+        WHERE id = #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'RUNNING'
+    </update>
+
+    <update id="failLoopNode">
+        UPDATE loop_node
+        SET status = 'FAILED',
+            observation_json = CAST(#{observationJson} AS JSON),
+            completed_at = CURRENT_TIMESTAMP(6),
+            version = version + 1
+        WHERE id = #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </update>
+
+    <update id="failOpenLoopNodes">
+        UPDATE loop_node
+        SET status = 'FAILED',
+            observation_json = CAST(#{observationJson} AS JSON),
+            completed_at = CURRENT_TIMESTAMP(6),
+            version = version + 1
+        WHERE loop_run_id =
+            #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status IN ('RUNNING', 'WAITING_CHILDREN')
+    </update>
+
+    <update id="failLoopRun">
+        UPDATE loop_run
+        SET status = 'FAILED',
+            completed_at = CURRENT_TIMESTAMP(6),
+            version = version + 1
+        WHERE id = #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </update>
+
+    <insert id="insertEvidence">
+        INSERT INTO evidence (
+            id, task_id, task_run_id, loop_run_id, loop_node_id,
+            evidence_type, subject_ref, result, details_json
+        ) VALUES (
+            #{evidenceId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{evidenceType}, #{subjectRef}, 'PASS',
+            CAST(#{detailsJson} AS JSON)
+        )
+    </insert>
+
+    <select id="nextEventSequence" resultType="long">
+        SELECT COALESCE(MAX(sequence_no), 0) + 1
+        FROM runtime_event
+        WHERE aggregate_id =
+            #{aggregateId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <insert id="insertRuntimeEvent">
+        INSERT INTO runtime_event (
+            id, job_id, task_id, task_run_id, aggregate_type,
+            aggregate_id, event_type, payload_json, sequence_no
+        ) VALUES (
+            #{eventId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{aggregateType},
+            #{aggregateId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{eventType}, CAST(#{payloadJson} AS JSON), #{sequenceNo}
+        )
+    </insert>
+
+    <insert id="insertOutboxEvent">
+        INSERT INTO outbox_event (id, event_type, payload_json, status)
+        VALUES (
+            #{eventId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{eventType}, CAST(#{payloadJson} AS JSON), 'PENDING'
+        )
+    </insert>
+
+    <insert id="registerCommand">
+        INSERT INTO command_deduplication (
+            idempotency_key, command_type, resource_id
+        ) VALUES (
+            #{idempotencyKey}, #{commandType},
+            #{resourceId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        )
+    </insert>
+
+    <select id="findTaskRun" resultType="map">
+        SELECT
+            BIN_TO_UUID(id) AS id,
+            BIN_TO_UUID(task_id) AS taskId,
+            run_type AS runType,
+            status,
+            attempt_no AS attemptNo,
+            result_summary AS resultSummary,
+            started_at AS startedAt,
+            completed_at AS completedAt
+        FROM task_run
+        WHERE id = #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <select id="findCheckpoints" resultType="map">
+        SELECT
+            BIN_TO_UUID(id) AS id,
+            sequence_no AS sequenceNo,
+            checkpoint_type AS checkpointType,
+            restorable,
+            checksum,
+            checksum = LOWER(SHA2(CAST(state_json AS CHAR), 256)) AS checksumValid,
+            created_at AS createdAt
+        FROM checkpoint
+        WHERE task_run_id =
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        ORDER BY sequence_no
+    </select>
+
+    <select id="findLoopNodes" resultType="map">
+        SELECT
+            BIN_TO_UUID(node.id) AS id,
+            BIN_TO_UUID(node.parent_node_id) AS parentNodeId,
+            node.depth,
+            node.iteration_no AS iterationNo,
+            node.action_type AS actionType,
+            node.goal,
+            node.status,
+            node.current_phase AS currentPhase,
+            JSON_UNQUOTE(JSON_EXTRACT(node.observation_json, '$.summary')) AS observation,
+            JSON_UNQUOTE(JSON_EXTRACT(node.output_json, '$.content')) AS output,
+            node.started_at AS startedAt,
+            node.completed_at AS completedAt
+        FROM loop_node node
+        JOIN loop_run run ON run.id = node.loop_run_id
+        WHERE run.task_run_id =
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        ORDER BY node.depth, node.iteration_no, node.started_at
+    </select>
+
+    <select id="findLoopNodePhases" resultType="map">
+        SELECT
+            BIN_TO_UUID(id) AS id,
+            phase_type AS phaseType,
+            sequence_no AS sequenceNo,
+            status,
+            summary,
+            started_at AS startedAt,
+            completed_at AS completedAt
+        FROM loop_node_phase
+        WHERE loop_node_id =
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        ORDER BY sequence_no
+    </select>
+
+    <select id="findEvidence" resultType="map">
+        SELECT
+            BIN_TO_UUID(id) AS id,
+            evidence_type AS evidenceType,
+            subject_ref AS subjectRef,
+            result,
+            created_at AS createdAt
+        FROM evidence
+        WHERE task_run_id =
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        ORDER BY created_at
+    </select>
+</mapper>

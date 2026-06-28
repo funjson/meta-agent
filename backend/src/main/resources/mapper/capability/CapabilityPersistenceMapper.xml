@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.capability.infrastructure.persistence.mybatis.CapabilityPersistenceMapper">
+
+    <select id="countSkillPackage" resultType="int">
+        SELECT COUNT(*)
+        FROM skill_package
+        WHERE id = #{packageId}
+          AND version = #{packageVersion}
+    </select>
+
+    <insert id="insertSkillPackage">
+        INSERT INTO skill_package (
+            id,
+            version,
+            name,
+            manifest_checksum,
+            status
+        ) VALUES (
+            #{packageId},
+            #{packageVersion},
+            #{name},
+            #{manifestChecksum},
+            'ACTIVE'
+        )
+    </insert>
+
+    <insert id="insertCompiledCapabilitySource">
+        INSERT INTO capability_source (
+            id,
+            version,
+            name,
+            source_type,
+            adapter_id,
+            capability_type,
+            scope_type,
+            descriptor_json,
+            checksum,
+            status,
+            raw_content,
+            compiled_manifest_json,
+            compiler_prompt_id,
+            compiler_prompt_version,
+            content_hash,
+            compiled_at
+        ) VALUES (
+            #{sourceId},
+            #{sourceVersion},
+            #{name},
+            'SKILL_PACKAGE',
+            'json-capability-v1',
+            #{capabilityType},
+            #{scopeType},
+            CAST(#{descriptorJson} AS JSON),
+            #{descriptorChecksum},
+            'ACTIVE',
+            #{rawContent},
+            CAST(#{compiledManifestJson} AS JSON),
+            #{promptId},
+            #{promptVersion},
+            #{contentHash},
+            CURRENT_TIMESTAMP(6)
+        )
+    </insert>
+
+    <insert id="insertSkillResource">
+        INSERT INTO skill_resource (
+            package_id,
+            package_version,
+            resource_path,
+            resource_type,
+            content_hash,
+            content_text,
+            executable_json
+        ) VALUES (
+            #{packageId},
+            #{packageVersion},
+            #{resourcePath},
+            #{resourceType},
+            #{contentHash},
+            #{contentText},
+            CASE
+                WHEN #{executableJson} IS NULL THEN NULL
+                ELSE CAST(#{executableJson} AS JSON)
+            END
+        )
+    </insert>
+
+    <select id="findSource" resultType="map">
+        SELECT
+            id,
+            version,
+            name,
+            source_type AS sourceType,
+            adapter_id AS adapterId,
+            capability_type AS capabilityType,
+            scope_type AS scopeType,
+            CAST(descriptor_json AS CHAR) AS descriptorJson,
+            checksum
+        FROM capability_source
+        WHERE id = #{sourceId}
+          AND version = #{sourceVersion}
+          AND status = 'ACTIVE'
+    </select>
+
+    <select id="findLoad" resultType="map">
+        SELECT
+            BIN_TO_UUID(id) AS loadId,
+            capability_type AS capabilityType,
+            CAST(descriptor_json AS CHAR) AS descriptorJson
+        FROM capability_load
+        WHERE loop_node_id =
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND source_id = #{sourceId}
+          AND source_version = #{sourceVersion}
+          AND status = 'APPLIED'
+    </select>
+
+    <insert id="insertLoad">
+        INSERT INTO capability_load (
+            id, task_run_id, loop_run_id, loop_node_id,
+            source_id, source_version, adapter_id, capability_type,
+            scope_root_type, scope_root_id, descriptor_json, status,
+            applied_at
+        ) VALUES (
+            #{loadId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{sourceId}, #{sourceVersion}, #{adapterId}, #{capabilityType},
+            #{scopeRootType},
+            #{scopeRootId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            CAST(#{descriptorJson} AS JSON), 'APPLIED',
+            CURRENT_TIMESTAMP(6)
+        )
+    </insert>
+
+    <insert id="inheritPolicyLoads">
+        INSERT IGNORE INTO capability_load (
+            id, task_run_id, loop_run_id, loop_node_id,
+            source_id, source_version, adapter_id, capability_type,
+            scope_root_type, scope_root_id, inherited_from_load_id,
+            descriptor_json, status, applied_at
+        )
+        SELECT
+            UUID_TO_BIN(UUID()),
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            source_id,
+            source_version,
+            adapter_id,
+            capability_type,
+            scope_root_type,
+            scope_root_id,
+            id,
+            descriptor_json,
+            'APPLIED',
+            CURRENT_TIMESTAMP(6)
+        FROM capability_load
+        WHERE loop_node_id =
+            #{parentLoopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND capability_type = 'POLICY'
+          AND scope_root_type IN ('LOOP_NODE_SUBTREE', 'LOOP_RUN')
+          AND status = 'APPLIED'
+    </insert>
+
+    <select id="findAppliedLoads" resultType="map">
+        SELECT
+            BIN_TO_UUID(load_record.id) AS loadId,
+            load_record.source_id AS sourceId,
+            load_record.source_version AS sourceVersion,
+            source.name,
+            load_record.adapter_id AS adapterId,
+            load_record.capability_type AS capabilityType,
+            load_record.scope_root_type AS scopeRootType,
+            CAST(load_record.descriptor_json AS CHAR) AS descriptorJson,
+            load_record.applied_at AS appliedAt
+        FROM capability_load load_record
+        JOIN capability_source source
+          ON source.id = load_record.source_id
+         AND source.version = load_record.source_version
+        WHERE load_record.loop_node_id =
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND load_record.status = 'APPLIED'
+        ORDER BY load_record.applied_at, load_record.created_at
+    </select>
+
+    <update id="updateLoopNodeScopedContext">
+        UPDATE loop_node
+        SET scoped_context_json = CAST(#{scopedContextJson} AS JSON),
+            version = version + 1
+        WHERE id =
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </update>
+</mapper>

@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.job.infrastructure.persistence.mybatis.TaskGraphTemplatePersistenceMapper">
+
+    <select id="findTemplateId" resultType="string">
+        SELECT BIN_TO_UUID(id)
+        FROM task_graph_template
+        WHERE agent_profile_id = #{agentProfileId}
+          AND template_key = #{templateKey}
+        ORDER BY version DESC
+        LIMIT 1
+    </select>
+
+    <select id="nextVersion" resultType="int">
+        SELECT COALESCE(MAX(version), 0) + 1
+        FROM task_graph_template
+        WHERE agent_profile_id = #{agentProfileId}
+          AND template_key = #{templateKey}
+    </select>
+
+    <update id="retireActiveVersions">
+        UPDATE task_graph_template
+        SET status = 'RETIRED'
+        WHERE agent_profile_id = #{agentProfileId}
+          AND template_key = #{templateKey}
+          AND status = 'ACTIVE'
+    </update>
+
+    <insert id="insert">
+        INSERT INTO task_graph_template (
+            id, agent_profile_id, template_key, version, name,
+            intent_tags_json, graph_json, checksum, status
+        ) VALUES (
+            #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{agentProfileId}, #{templateKey}, #{version}, #{name},
+            CAST(#{intentLabelsJson} AS JSON),
+            CAST(#{graphJson} AS JSON),
+            #{checksum}, 'ACTIVE'
+        )
+    </insert>
+
+    <sql id="columns">
+        BIN_TO_UUID(id) AS id,
+        agent_profile_id AS agentProfileId,
+        template_key AS templateKey,
+        version,
+        name,
+        CAST(intent_tags_json AS CHAR) AS intentLabelsJson,
+        CAST(graph_json AS CHAR) AS graphJson,
+        checksum,
+        status,
+        created_at AS createdAt
+    </sql>
+
+    <select id="find" resultType="map">
+        SELECT <include refid="columns"/>
+        FROM task_graph_template
+        WHERE id =
+            #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND version = #{version}
+    </select>
+
+    <select id="findAll" resultType="map">
+        SELECT <include refid="columns"/>
+        FROM task_graph_template
+        WHERE agent_profile_id = #{agentProfileId}
+        ORDER BY template_key, version DESC
+    </select>
+
+    <select id="findActive" resultType="map">
+        SELECT <include refid="columns"/>
+        FROM task_graph_template
+        WHERE agent_profile_id = #{agentProfileId}
+          AND status = 'ACTIVE'
+        ORDER BY template_key
+    </select>
+</mapper>

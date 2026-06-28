@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.clarification.infrastructure.persistence.mybatis.ClarificationPersistenceMapper">
+
+    <sql id="clarificationColumns">
+        BIN_TO_UUID(id) AS id,
+        BIN_TO_UUID(conversation_id) AS conversationId,
+        BIN_TO_UUID(job_id) AS jobId,
+        BIN_TO_UUID(task_id) AS taskId,
+        BIN_TO_UUID(task_run_id) AS taskRunId,
+        BIN_TO_UUID(loop_node_id) AS loopNodeId,
+        source_type AS sourceType,
+        reason_type AS reasonType,
+        status,
+        question,
+        CAST(contract_json AS CHAR) AS contractJson,
+        answer,
+        BIN_TO_UUID(answer_message_id) AS answerMessageId,
+        CAST(resolution_json AS CHAR) AS resolutionJson,
+        resolved_at AS resolvedAt,
+        blocking_summary AS blockingSummary,
+        max_rounds AS maxRounds,
+        current_round AS currentRound,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+    </sql>
+
+    <select id="findOpenByJobId" resultType="map">
+        SELECT <include refid="clarificationColumns"/>
+        FROM clarification_request
+        WHERE job_id =
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'OPEN'
+        ORDER BY created_at DESC
+        LIMIT 1
+    </select>
+
+    <select id="findOpenByConversationId" resultType="map">
+        SELECT <include refid="clarificationColumns"/>
+        FROM clarification_request
+        WHERE conversation_id =
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'OPEN'
+        ORDER BY created_at DESC
+    </select>
+
+    <select id="findRecentResolvedByConversationId" resultType="map">
+        SELECT <include refid="clarificationColumns"/>
+        FROM clarification_request
+        WHERE conversation_id =
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'RESOLVED'
+        ORDER BY resolved_at DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="findOpenBySource" resultType="map">
+        SELECT <include refid="clarificationColumns"/>
+        FROM clarification_request
+        WHERE status = 'OPEN'
+          AND (
+              (#{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY}
+                   IS NULL AND job_id IS NULL)
+              OR job_id =
+                 #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY}
+          )
+          AND (
+              (#{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY}
+                   IS NULL AND task_id IS NULL)
+              OR task_id =
+                 #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY}
+          )
+          AND (
+              (#{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY}
+                   IS NULL AND task_run_id IS NULL)
+              OR task_run_id =
+                 #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY}
+          )
+          AND (
+              (#{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY}
+                   IS NULL AND loop_node_id IS NULL)
+              OR loop_node_id =
+                 #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY}
+          )
+        ORDER BY created_at
+    </select>
+
+    <insert id="insert">
+        INSERT INTO clarification_request (
+            id, conversation_id, job_id, task_id, task_run_id, loop_node_id,
+            source_type, reason_type, status, question, contract_json, blocking_summary,
+            max_rounds, current_round
+        ) VALUES (
+            #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{draft.sourceType},
+            #{draft.reasonType},
+            'OPEN',
+            #{draft.question},
+            CAST(#{draft.contractJson} AS JSON),
+            #{draft.blockingSummary},
+            #{draft.maxRounds},
+            1
+        )
+    </insert>
+
+    <update id="answer">
+        UPDATE clarification_request
+        SET status = 'ANSWERED',
+            answer = #{answer},
+            answer_message_id =
+                #{answerMessageId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            current_round = current_round + 1
+        WHERE id =
+            #{clarificationRequestId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'OPEN'
+    </update>
+
+    <update id="recordPartialAnswer">
+        UPDATE clarification_request
+        SET answer = CASE
+                WHEN answer IS NULL OR answer = '' THEN #{answer}
+                ELSE CONCAT(answer, '\n', #{answer})
+            END,
+            answer_message_id =
+                #{answerMessageId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            resolution_json = CAST(#{partialResolutionJson} AS JSON),
+            current_round = current_round + 1
+        WHERE id =
+            #{clarificationRequestId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'OPEN'
+    </update>
+
+    <update id="resolve">
+        UPDATE clarification_request
+        SET status = 'RESOLVED',
+            resolution_json = CAST(#{resolutionJson} AS JSON),
+            resolved_at = CURRENT_TIMESTAMP(6)
+        WHERE id =
+            #{clarificationRequestId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'ANSWERED'
+    </update>
+</mapper>

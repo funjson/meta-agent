@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.control.infrastructure.persistence.mybatis.ControlTurnPersistenceMapper">
+
+    <select id="findTurnByIdempotencyKey" resultType="map">
+        SELECT
+            BIN_TO_UUID(id) AS id,
+            BIN_TO_UUID(conversation_id) AS conversationId,
+            BIN_TO_UUID(source_message_id) AS sourceMessageId,
+            idempotency_key AS idempotencyKey,
+            status,
+            BIN_TO_UUID(job_id) AS jobId,
+            version,
+            created_at AS createdAt,
+            updated_at AS updatedAt
+        FROM control_turn
+        WHERE idempotency_key = #{idempotencyKey}
+    </select>
+
+    <select id="findDecision" resultType="map">
+        SELECT
+            BIN_TO_UUID(id) AS id,
+            BIN_TO_UUID(control_turn_id) AS controlTurnId,
+            BIN_TO_UUID(source_message_id) AS sourceMessageId,
+            BIN_TO_UUID(job_id) AS jobId,
+            intent_type AS intentType,
+            confidence,
+            classifier,
+            goal_summary AS goalSummary,
+            decision_summary AS decisionSummary,
+            CAST(constraints_json AS CHAR) AS constraintsJson,
+            requires_clarification AS requiresClarification,
+            compound_task AS compoundTask,
+            risk_level AS riskLevel,
+            created_at AS createdAt
+        FROM control_decision
+        WHERE control_turn_id =
+            #{controlTurnId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
+    <insert id="insertTurn">
+        INSERT INTO control_turn (
+            id,
+            conversation_id,
+            source_message_id,
+            idempotency_key,
+            status
+        ) VALUES (
+            #{controlTurnId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{sourceMessageId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{idempotencyKey},
+            'INITIALIZING'
+        )
+    </insert>
+
+    <update id="attachJob">
+        UPDATE control_turn
+        SET job_id =
+                #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            version = version + 1
+        WHERE id =
+            #{controlTurnId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'INITIALIZING'
+    </update>
+
+    <insert id="insertDecision">
+        INSERT INTO control_decision (
+            id, control_turn_id, conversation_id, source_message_id,
+            job_id, intent_type, confidence, classifier, goal_summary,
+            decision_summary, constraints_json, task_graph_json,
+            requires_clarification, compound_task, risk_level
+        ) VALUES (
+            #{decisionId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{controlTurnId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{sourceMessageId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{recognition.intentType},
+            #{recognition.confidence},
+            #{recognition.classifier},
+            #{recognition.goalSummary},
+            #{recognition.decisionSummary},
+            CAST(#{constraintsJson} AS JSON),
+            CASE
+                WHEN #{taskGraphJson} IS NULL THEN NULL
+                ELSE CAST(#{taskGraphJson} AS JSON)
+            END,
+            #{recognition.requiresClarification},
+            #{recognition.compoundTask},
+            #{recognition.riskLevel}
+        )
+    </insert>
+
+    <update id="completeTurn">
+        UPDATE control_turn
+        SET status = 'COMPLETED',
+            version = version + 1
+        WHERE id =
+            #{controlTurnId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'INITIALIZING'
+    </update>
+</mapper>
