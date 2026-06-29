@@ -11,6 +11,7 @@
 | Template Management | TaskGraphTemplate 版本、图校验和激活 |
 | Authorization Inbox | 待授权差异、批准和拒绝 |
 | Provider Settings | Secret 配置与连接测试 |
+| File Upload | Conversation 级文件上传、附件 chip 展示和复制导出 |
 
 ## Agent Path
 
@@ -28,12 +29,26 @@ Conversation
 Child Job 嵌套在发起它的 origin LoopNode 下。界面只显示结构化摘要和可审计事实，不显示隐藏思维链、完整 Prompt、Secret 或未脱敏 Tool 参数。
 
 Agent Path 支持滚动、同层级点击展开/收起、复制为面向 Codex 调试的 Markdown/树形文本。Job、TaskRun、LoopNode 展示对象目标摘要，不把大段最终回复当路径摘要。
+默认使用“简洁”模式隐藏 Phase、Checkpoint、ModelCall、RecoveryAttempt 等底层调试节点；“调试”模式展示完整路径。复制导出始终包含完整路径，方便把原始链路交给开发侧排查。
 
 ## 聊天消息可见性
 
 - 聊天区只展示用户消息、用户可见结果、澄清问题、消歧问题和失败提示。
 - `JOB_ACCEPTED`、恢复提交、Worker 调度等内部状态只进入 Agent Path / RuntimeEvent，不进入 Conversation 可见消息。
 - 复制聊天记录应包含 message id、role、messageType、jobId、taskRunId 和正文，便于复盘。
+- 上传文件显示为输入区附件 chip，不把文件正文写入 message.content；复制聊天记录包含文件元数据，便于调试。
+
+## 文件上传
+
+```text
+Composer attachment button
+  → POST /api/v1/conversations/{id}/files
+  → conversation_file
+  → LoopContextBuilder 注入文件清单
+  → ReActActionPlanner 选择 file.read / file.search / file.write
+```
+
+前端只负责上传和展示附件元数据；模型是否读取文件由 Loop 的正式 Tool 选择决定。
 
 ## 长任务交互
 

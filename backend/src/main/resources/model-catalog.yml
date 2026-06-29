@@ -1,0 +1,116 @@
+defaults:
+  executorModelId: deepseek-chat
+  fallbackModelId: fake
+
+models:
+  - id: fake
+    displayName: Fake deterministic model
+    providerId: fake
+    providerModel: fake-deterministic-v1
+    family: fake
+    contextWindow: 8192
+    modalities: [text]
+    capabilities:
+      toolCalling: true
+      reasoning: false
+      reasoningContent: false
+      thinkingMode: false
+      vision: false
+
+  - id: deepseek-chat
+    displayName: DeepSeek Chat
+    providerId: deepseek
+    providerModel: deepseek-chat
+    family: deepseek
+    contextWindow: 1048576
+    modalities: [text]
+    capabilities:
+      toolCalling: true
+      reasoning: false
+      reasoningContent: false
+      thinkingMode: false
+      vision: false
+
+  - id: deepseek-reasoner
+    displayName: DeepSeek Reasoner
+    providerId: deepseek
+    providerModel: deepseek-reasoner
+    family: deepseek
+    contextWindow: 1048576
+    modalities: [text]
+    capabilities:
+      toolCalling: false
+      reasoning: true
+      reasoningContent: true
+      thinkingMode: true
+      vision: false
+
+  - id: deepseek-v4-flash
+    displayName: DeepSeek V4 Flash
+    providerId: deepseek
+    providerModel: deepseek-v4-flash
+    family: deepseek
+    contextWindow: 1048576
+    modalities: [text]
+    capabilities:
+      toolCalling: true
+      reasoning: false
+      reasoningContent: false
+      thinkingMode: false
+      vision: false
+
+  - id: deepseek-v4-pro
+    displayName: DeepSeek V4 Pro
+    providerId: deepseek
+    providerModel: deepseek-v4-pro
+    family: deepseek
+    contextWindow: 1048576
+    modalities: [text]
+    capabilities:
+      toolCalling: true
+      reasoning: false
+      reasoningContent: false
+      thinkingMode: false
+      vision: false
+
+  - id: glm-4.5
+    displayName: GLM-4.5
+    providerId: glm
+    providerModel: glm-4.5
+    family: glm
+    contextWindow: 128000
+    modalities: [text]
+    capabilities:
+      toolCalling: true
+      reasoning: true
+      reasoningContent: true
+      thinkingMode: true
+      vision: false
+
+  - id: glm-4.5-air
+    displayName: GLM-4.5 Air
+    providerId: glm
+    providerModel: glm-4.5-air
+    family: glm
+    contextWindow: 128000
+    modalities: [text]
+    capabilities:
+      toolCalling: true
+      reasoning: true
+      reasoningContent: true
+      thinkingMode: true
+      vision: false
+
+  - id: glm-4.5-flash
+    displayName: GLM-4.5 Flash
+    providerId: glm
+    providerModel: glm-4.5-flash
+    family: glm
+    contextWindow: 128000
+    modalities: [text]
+    capabilities:
+      toolCalling: true
+      reasoning: true
+      reasoningContent: true
+      thinkingMode: true
+      vision: false

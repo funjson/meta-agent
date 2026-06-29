@@ -35,7 +35,11 @@ public record LoopActionResult(
                 Map.of(
                         "provider", response.provider(),
                         "model", response.model(),
-                        "finishReason", response.finishReason()));
+                        "finishReason", response.finishReason(),
+                        "toolCallCount", response.toolCalls().size(),
+                        "reasoningPresent",
+                        response.reasoningContent() != null
+                                && !response.reasoningContent().isBlank()));
     }
 
     /**
@@ -64,8 +68,21 @@ public record LoopActionResult(
      * @return 动作结果
      */
     public static LoopActionResult fromTool(ToolResult result) {
+        return fromTool(result, LoopActionType.TOOL_CALL);
+    }
+
+    /**
+     * 从 ToolResult 创建动作结果，并保留规划阶段选择的语义动作类型。
+     *
+     * @param result Tool 结果
+     * @param actionType 规划动作类型
+     * @return 动作结果
+     */
+    public static LoopActionResult fromTool(
+            ToolResult result,
+            LoopActionType actionType) {
         return new LoopActionResult(
-                LoopActionType.TOOL_CALL,
+                actionType,
                 "tool:" + result.invocationId(),
                 result.content(),
                 result.attributes());

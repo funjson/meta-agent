@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.context.infrastructure.persistence.mybatis.ConversationFactPersistenceMapper">
+
+    <insert id="upsert">
+        INSERT INTO conversation_fact (
+            id,
+            conversation_id,
+            source_message_id,
+            source_type,
+            scope,
+            fact_key,
+            fact_value,
+            confidence,
+            status
+        ) VALUES (
+            #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{sourceMessageId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{sourceType},
+            #{scope},
+            #{key},
+            #{value},
+            #{confidence},
+            'ACTIVE'
+        )
+        ON DUPLICATE KEY UPDATE
+            source_message_id = VALUES(source_message_id),
+            source_type = VALUES(source_type),
+            fact_value = VALUES(fact_value),
+            confidence = VALUES(confidence),
+            status = 'ACTIVE',
+            updated_at = CURRENT_TIMESTAMP(6)
+    </insert>
+
+    <select id="findActiveByConversation" resultType="map">
+        SELECT
+            BIN_TO_UUID(id) AS id,
+            BIN_TO_UUID(conversation_id) AS conversationId,
+            BIN_TO_UUID(source_message_id) AS sourceMessageId,
+            source_type AS sourceType,
+            scope,
+            fact_key AS `key`,
+            fact_value AS `value`,
+            confidence,
+            created_at AS createdAt,
+            updated_at AS updatedAt
+        FROM conversation_fact
+        WHERE conversation_id =
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'ACTIVE'
+        ORDER BY updated_at DESC, created_at DESC
+    </select>
+</mapper>

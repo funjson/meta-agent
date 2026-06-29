@@ -19,6 +19,9 @@ classDiagram
 Conversation ID → 查询 ControlDecision、Job、TaskRun、Loop、Skill、Tool、Evidence 与 Checkpoint 事实
 → 构建可折叠 Agent Path。
 
+后端投影会把 `LoopNode`、`TaskRun` 等内部运行对象渲染为阶段语义，例如“继续生成最终结果”“等待用户补充”“模型生成”。
+前端默认使用简洁模式隐藏 Phase、Checkpoint、ModelCall、RecoveryAttempt 等调试节点；调试模式和复制导出仍保留完整路径。
+
 ## 所有权和依赖
 
 Observability 只拥有读模型合同，可以读取各事实表，不得被核心执行模块用于写状态。

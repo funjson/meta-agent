@@ -18,6 +18,7 @@ import com.funjson.metaagent.capability.application.CapabilityApplicationService
 import com.funjson.metaagent.capability.domain.CapabilityPlanningContext;
 import com.funjson.metaagent.context.application.LoopContextBuilder;
 import com.funjson.metaagent.context.domain.LoopContextSnapshot;
+import com.funjson.metaagent.loop.application.ReActActionPlanner;
 import com.funjson.metaagent.loop.application.RuntimeExecutionService;
 import com.funjson.metaagent.loop.application.RuntimeTransactionService;
 import com.funjson.metaagent.loop.domain.ClarificationNeedDetector;
@@ -27,10 +28,11 @@ import com.funjson.metaagent.loop.domain.LoopActionType;
 import com.funjson.metaagent.loop.domain.LoopEvaluation;
 import com.funjson.metaagent.loop.domain.LoopEvaluationDecision;
 import com.funjson.metaagent.loop.domain.LoopCompletionPolicy;
+import com.funjson.metaagent.loop.domain.LoopCorrectionPolicy;
 import com.funjson.metaagent.loop.domain.LoopExecutionPolicy;
 import com.funjson.metaagent.loop.domain.LoopOutcome;
 import com.funjson.metaagent.loop.domain.LoopPhaseType;
-import com.funjson.metaagent.loop.domain.LoopPlanner;
+import com.funjson.metaagent.loop.domain.LoopPlan;
 import com.funjson.metaagent.loop.domain.LoopRunParentType;
 import com.funjson.metaagent.loop.domain.RunExecutionContext;
 import com.funjson.metaagent.prompt.domain.RenderedPrompt;
@@ -39,10 +41,13 @@ import com.funjson.metaagent.provider.application.ModelProviderRegistry;
 import com.funjson.metaagent.provider.domain.ModelProvider;
 import com.funjson.metaagent.provider.domain.ModelRequest;
 import com.funjson.metaagent.provider.domain.ModelResponse;
+import com.funjson.metaagent.provider.domain.ModelToolCall;
+import com.funjson.metaagent.provider.domain.ModelToolSpec;
 import com.funjson.metaagent.recovery.application.RuntimeLeaseService;
 import com.funjson.metaagent.recovery.domain.LoopNodeResumeContext;
 import com.funjson.metaagent.runtime.domain.ClarificationAnswerOutcome;
 import com.funjson.metaagent.tool.application.ToolExecutionService;
+import com.funjson.metaagent.tool.application.ToolCatalogService;
 import com.funjson.metaagent.tool.application.ToolInvocationCommand;
 import org.junit.jupiter.api.Test;
 
@@ -50,6 +55,121 @@ import org.junit.jupiter.api.Test;
  * 验证 LoopNode 在人工澄清恢复后不会重复写动作执行阶段。
  */
 class RuntimeExecutionServiceClarificationRecoveryTest {
+
+    @Test
+    void nativeToolCallingBypassesJsonPlanner() {
+        RuntimeTransactionService transactions =
+                mock(RuntimeTransactionService.class);
+        ModelProviderRegistry modelProviders =
+                mock(ModelProviderRegistry.class);
+        PromptRegistry promptRegistry = mock(PromptRegistry.class);
+        ReActActionPlanner actionPlanner = mock(ReActActionPlanner.class);
+        CapabilityApplicationService capabilities =
+                mock(CapabilityApplicationService.class);
+        LoopContextBuilder contextBuilder = mock(LoopContextBuilder.class);
+        ToolExecutionService tools = mock(ToolExecutionService.class);
+        ToolCatalogService toolCatalog = mock(ToolCatalogService.class);
+        LoopCompletionPolicy completionPolicy =
+                mock(LoopCompletionPolicy.class);
+        RuntimeExecutionService service = new RuntimeExecutionService(
+                transactions,
+                modelProviders,
+                promptRegistry,
+                actionPlanner,
+                completionPolicy,
+                new LoopCorrectionPolicy(),
+                new ClarificationNeedDetector(),
+                mock(ExecutionDerivationPolicy.class),
+                capabilities,
+                mock(RuntimeLeaseService.class),
+                contextBuilder,
+                tools,
+                toolCatalog);
+        RunExecutionContext context = context();
+        RenderedPrompt prompt = new RenderedPrompt(
+                "loop.execution",
+                "v2",
+                "system",
+                "user",
+                "hash");
+        ModelProvider provider = mock(ModelProvider.class);
+        RuntimeTransactionService.ExternalActionHandle handle =
+                new RuntimeTransactionService.ExternalActionHandle(
+                        UUID.randomUUID());
+        LoopEvaluation evaluation = new LoopEvaluation(
+                LoopEvaluationDecision.COMPLETE,
+                "工具结果满足目标",
+                "");
+        LoopOutcome expected = LoopOutcome.completed(
+                context,
+                "搜索完成",
+                UUID.randomUUID());
+        when(capabilities.prepare(context))
+                .thenReturn(CapabilityPlanningContext.empty());
+        when(contextBuilder.build(eq(context), any()))
+                .thenReturn(new LoopContextSnapshot(
+                        context.taskRunId(),
+                        context.loopNodeId(),
+                        List.of(),
+                        1024));
+        when(modelProviders.require("fake")).thenReturn(provider);
+        when(provider.supportsNativeToolCalling()).thenReturn(true);
+        when(provider.supportsNativeToolCalling(anyString())).thenReturn(true);
+        when(toolCatalog.modelToolSpecs()).thenReturn(List.of(
+                new ModelToolSpec(
+                        "web.search",
+                        "web_search",
+                        "搜索网络",
+                        "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}}}")));
+        when(promptRegistry.render(any(), any())).thenReturn(prompt);
+        when(transactions.startExternalAction(context, prompt))
+                .thenReturn(handle);
+        when(provider.generate(any(ModelRequest.class)))
+                .thenReturn(new ModelResponse(
+                        "fake",
+                        "fake-model",
+                        "",
+                        "tool_calls",
+                        List.of(new ModelToolCall(
+                                "call-1",
+                                "web.search",
+                                "web_search",
+                                Map.of("query", "北京天气"))),
+                        ""));
+        when(tools.invokeForLoop(
+                eq(context),
+                any(ToolInvocationCommand.class),
+                eq(LoopActionType.WEB_SEARCH)))
+                .thenReturn(new LoopActionResult(
+                        LoopActionType.WEB_SEARCH,
+                        "tool:web",
+                        "北京天气搜索结果",
+                        Map.of()));
+        when(transactions.nodeCount(context.loopRunId())).thenReturn(1);
+        when(completionPolicy.evaluate(
+                eq(context),
+                any(LoopActionResult.class),
+                any(LoopExecutionPolicy.class),
+                eq(1))).thenReturn(evaluation);
+        when(transactions.complete(
+                eq(context),
+                any(LoopActionResult.class),
+                eq(evaluation))).thenReturn(expected);
+
+        LoopOutcome actual = service.execute(context);
+
+        var requestCaptor = forClass(ModelRequest.class);
+        verify(provider).generate(requestCaptor.capture());
+        assertThat(actual).isSameAs(expected);
+        assertThat(requestCaptor.getValue().tools())
+                .extracting(ModelToolSpec::toolId)
+                .containsExactly("web.search");
+        verify(actionPlanner, never()).plan(any(), any(), any());
+        verify(tools).invokeForLoop(
+                eq(context),
+                any(ToolInvocationCommand.class),
+                eq(LoopActionType.WEB_SEARCH));
+    }
 
     @Test
     void modelClarificationIsUpgradedWithRuntimeContract() {
@@ -62,18 +182,21 @@ class RuntimeExecutionServiceClarificationRecoveryTest {
                 mock(CapabilityApplicationService.class);
         LoopContextBuilder contextBuilder = mock(LoopContextBuilder.class);
         ToolExecutionService tools = mock(ToolExecutionService.class);
+        ReActActionPlanner actionPlanner = mock(ReActActionPlanner.class);
         RuntimeExecutionService service = new RuntimeExecutionService(
                 transactions,
                 modelProviders,
                 promptRegistry,
-                new LoopPlanner(),
+                actionPlanner,
                 mock(LoopCompletionPolicy.class),
+                new LoopCorrectionPolicy(),
                 new ClarificationNeedDetector(),
                 mock(ExecutionDerivationPolicy.class),
                 capabilities,
                 mock(RuntimeLeaseService.class),
                 contextBuilder,
-                tools);
+                tools,
+                mock(ToolCatalogService.class));
         RunExecutionContext context = context();
         UUID requestId = UUID.randomUUID();
         RenderedPrompt prompt = new RenderedPrompt(
@@ -91,6 +214,11 @@ class RuntimeExecutionServiceClarificationRecoveryTest {
                         context.loopNodeId(),
                         List.of(),
                         1024));
+        when(actionPlanner.plan(eq(context), any(), any()))
+                .thenReturn(LoopPlan.modelCall(
+                        "Provider 返回非空、可展示的最终结果",
+                        "调用模型完成当前目标",
+                        512));
         when(promptRegistry.render(any(), any()))
                 .thenReturn(prompt);
         when(transactions.startExternalAction(context, prompt))
@@ -103,9 +231,12 @@ class RuntimeExecutionServiceClarificationRecoveryTest {
                         "fake-model",
                         "请补充姓名、学历、工作经验、岗位和风格。",
                         "stop"));
-        when(tools.invokeForLoop(eq(context), any()))
+        when(tools.invokeForLoop(
+                eq(context),
+                any(),
+                eq(LoopActionType.CLARIFICATION_REQUEST)))
                 .thenReturn(new LoopActionResult(
-                        LoopActionType.TOOL_CALL,
+                        LoopActionType.CLARIFICATION_REQUEST,
                         "tool:" + requestId,
                         "请补充姓名、学历、工作经验、岗位和风格。",
                         Map.of(
@@ -119,7 +250,10 @@ class RuntimeExecutionServiceClarificationRecoveryTest {
         LoopOutcome outcome = service.execute(context);
 
         var commandCaptor = forClass(ToolInvocationCommand.class);
-        verify(tools).invokeForLoop(eq(context), commandCaptor.capture());
+        verify(tools).invokeForLoop(
+                eq(context),
+                commandCaptor.capture(),
+                eq(LoopActionType.CLARIFICATION_REQUEST));
         ToolInvocationCommand command = commandCaptor.getValue();
         assertThat(outcome.status()).isEqualTo(
                 LoopOutcome.OutcomeStatus.WAITING_HUMAN);
@@ -206,14 +340,16 @@ class RuntimeExecutionServiceClarificationRecoveryTest {
                 transactions,
                 mock(ModelProviderRegistry.class),
                 mock(PromptRegistry.class),
-                mock(LoopPlanner.class),
+                mock(ReActActionPlanner.class),
                 completionPolicy,
+                new LoopCorrectionPolicy(),
                 mock(ClarificationNeedDetector.class),
                 mock(ExecutionDerivationPolicy.class),
                 mock(CapabilityApplicationService.class),
                 mock(RuntimeLeaseService.class),
                 mock(LoopContextBuilder.class),
-                mock(ToolExecutionService.class));
+                mock(ToolExecutionService.class),
+                mock(ToolCatalogService.class));
     }
 
     /** @return 测试用 LoopNode 上下文 */

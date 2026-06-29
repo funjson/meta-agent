@@ -29,8 +29,12 @@ classDiagram
 CapabilityLoadService 继承/加载
   → CapabilityScopeResolver 合并局部规范
   → CapabilityDerivationResolver 解析 STEP / CHILD_JOB
-  → LoopPlanner 选择 Child Loop 或 Child Job
+  → ReActActionPlanner 执行 Child Loop / Child Job 派生
 ```
+
+Skill Manifest 不再通过 policy 直接替模型选择工具。通用 Tool / Skill 命中由
+`ReActActionPlanner` 的模型结构化动作选择完成；Manifest 仍负责不可变规范、STEP 和
+CHILD_JOB 派生。
 
 ## 所有权和允许依赖
 

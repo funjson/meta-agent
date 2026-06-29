@@ -10,7 +10,9 @@ import com.funjson.metaagent.context.domain.ContextBlock;
 import com.funjson.metaagent.context.domain.ContextBlockType;
 import com.funjson.metaagent.context.domain.ContextConversation;
 import com.funjson.metaagent.context.domain.ContextEnvelope;
+import com.funjson.metaagent.context.domain.ContextFact;
 import com.funjson.metaagent.context.domain.ContextMessage;
+import com.funjson.metaagent.context.application.port.out.ConversationFactStore;
 import com.funjson.metaagent.conversation.application.port.out.ConversationStore;
 import com.funjson.metaagent.runtime.domain.RuntimeStateException;
 import org.springframework.stereotype.Service;
@@ -29,18 +31,22 @@ public class ContextAssembler {
 
     private final ConversationStore conversationStore;
     private final ClarificationService clarificationService;
+    private final ConversationFactStore conversationFactStore;
 
     /**
      * 创建上下文装配器。
      *
      * @param conversationStore Conversation Store
      * @param clarificationService Clarification Service
+     * @param conversationFactStore Conversation Fact Store
      */
     public ContextAssembler(
             ConversationStore conversationStore,
-            ClarificationService clarificationService) {
+            ClarificationService clarificationService,
+            ConversationFactStore conversationFactStore) {
         this.conversationStore = conversationStore;
         this.clarificationService = clarificationService;
+        this.conversationFactStore = conversationFactStore;
     }
 
     /**
@@ -65,6 +71,7 @@ public class ContextAssembler {
                                 message.messageType(),
                                 message.content()))
                         .toList(),
+                conversationFactStore.findActiveByConversation(conversationId),
                 clarificationService.findOpenByConversation(conversationId),
                 clarificationService.findRecentResolvedByConversation(
                         conversationId,
@@ -84,6 +91,8 @@ public class ContextAssembler {
                 envelope.conversation().title(),
                 envelope.conversation().activeJobId()));
         sections.add("可见消息：\n" + renderMessages(envelope.visibleMessages()));
+        sections.add("Conversation 级结构化事实（系统可用，不直接展示给用户）：\n"
+                + renderConversationFacts(envelope.conversationFacts()));
         sections.add("等待交互候选：\n"
                 + renderClarifications(envelope.openClarifications()));
         sections.add("已解决澄清事实（系统可用，不直接展示给用户）：\n"
@@ -105,6 +114,10 @@ public class ContextAssembler {
                 ContextBlockType.CONVERSATION,
                 "Visible Conversation Messages",
                 renderMessages(envelope.visibleMessages())));
+        blocks.add(block(
+                ContextBlockType.MEMORY,
+                "Conversation Structured Facts",
+                renderConversationFacts(envelope.conversationFacts())));
         blocks.add(block(
                 ContextBlockType.PENDING_INTERACTION,
                 "Open Waiting Interactions",
@@ -155,6 +168,23 @@ public class ContextAssembler {
                         oneLine(message.content())))
                 .reduce((left, right) -> left + "\n" + right)
                 .orElse("无可见历史消息");
+    }
+
+    /**
+     * 渲染 Conversation 级结构化事实。
+     */
+    private String renderConversationFacts(List<ContextFact> facts) {
+        if (facts.isEmpty()) {
+            return "无 Conversation 结构化事实";
+        }
+        return facts.stream()
+                .map(fact -> "- %s=%s source=%s confidence=%.2f".formatted(
+                        fact.key(),
+                        oneLine(fact.value()),
+                        fact.sourceType(),
+                        fact.confidence()))
+                .reduce((left, right) -> left + "\n" + right)
+                .orElse("无 Conversation 结构化事实");
     }
 
     /**

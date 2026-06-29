@@ -17,6 +17,7 @@ import com.funjson.metaagent.job.domain.JobCreationContext;
 import com.funjson.metaagent.job.domain.JobNotFoundException;
 import com.funjson.metaagent.job.domain.JobStatus;
 import com.funjson.metaagent.job.domain.TaskGraphPlan;
+import com.funjson.metaagent.provider.application.ModelCatalogService;
 import com.funjson.metaagent.task.domain.TaskStatus;
 
 /**
@@ -29,6 +30,7 @@ public class JobService {
 
     private final JobStore jobStore;
     private final ObjectMapper objectMapper;
+    private final ModelCatalogService modelCatalog;
 
     /**
      * 创建 Job Application Service。
@@ -36,9 +38,13 @@ public class JobService {
      * @param jobStore Job Store Port
      * @param objectMapper JSON 序列化器
      */
-    public JobService(JobStore jobStore, ObjectMapper objectMapper) {
+    public JobService(
+            JobStore jobStore,
+            ObjectMapper objectMapper,
+            ModelCatalogService modelCatalog) {
         this.jobStore = jobStore;
         this.objectMapper = objectMapper;
+        this.modelCatalog = modelCatalog;
     }
 
     /**
@@ -202,9 +208,7 @@ public class JobService {
         String providerId = request.providerId() == null || request.providerId().isBlank()
                 ? "fake"
                 : request.providerId().trim();
-        if (!providerId.equals("fake") && !providerId.equals("deepseek")) {
-            throw new IllegalArgumentException("Unsupported provider: " + providerId);
-        }
+        validateExecutorModel(providerId);
         String goalSummary = summarize(normalizedRequest);
         JobStatus initialJobStatus = taskGraph.nodes().stream()
                 .anyMatch(node -> node.initialStatus() == TaskStatus.READY)
@@ -282,6 +286,31 @@ public class JobService {
         return singleLine.length() <= 120
                 ? singleLine
                 : singleLine.substring(0, 117) + "...";
+    }
+
+    /**
+     * Validates that the persisted executor reference is either a framework
+     * model ID or a legacy provider ID.
+     *
+     * <p>New Control flows persist the framework model ID, for example
+     * {@code deepseek-v4-pro}. Older internal callers may still pass provider
+     * IDs such as {@code deepseek}; those remain valid until every API has been
+     * renamed from providerId to executorModelId.</p>
+     *
+     * @param executorRef model ID or legacy provider ID
+     */
+    private void validateExecutorModel(String executorRef) {
+        // Model IDs are the formal path: Job stores the user's chosen executor
+        // while provider adapters remain hidden behind the model catalog.
+        if (modelCatalog.find(executorRef).isPresent()) {
+            return;
+        }
+        // Legacy provider IDs are kept for old conversations, tests and direct
+        // API calls that predate the model catalog.
+        if ("deepseek".equals(executorRef) || "glm".equals(executorRef)) {
+            return;
+        }
+        throw new IllegalArgumentException("Unsupported executor model: " + executorRef);
     }
 
     /**

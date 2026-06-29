@@ -10,9 +10,9 @@ import com.funjson.metaagent.job.domain.JobCompletionPolicy;
 import com.funjson.metaagent.loop.domain.ExecutionDerivationPolicy;
 import com.funjson.metaagent.loop.domain.ClarificationNeedDetector;
 import com.funjson.metaagent.loop.domain.LoopCompletionPolicy;
+import com.funjson.metaagent.loop.domain.LoopCorrectionPolicy;
 import com.funjson.metaagent.loop.domain.LoopEvaluator;
 import com.funjson.metaagent.loop.domain.LoopNodeStateMachine;
-import com.funjson.metaagent.loop.domain.LoopPlanner;
 import com.funjson.metaagent.recovery.domain.RecoveryPolicy;
 import com.funjson.metaagent.runtime.domain.PolicyResolver;
 import com.funjson.metaagent.task.domain.DefaultTaskCompletionPolicy;
@@ -57,6 +57,12 @@ public class DomainPolicyConfiguration {
         return new LoopEvaluator(clarificationNeedDetector);
     }
 
+    /** @return 长任务执行纠偏策略 */
+    @Bean
+    public LoopCorrectionPolicy loopCorrectionPolicy() {
+        return new LoopCorrectionPolicy();
+    }
+
     /** @return 模型输出中的澄清需求检测器 */
     @Bean
     public ClarificationNeedDetector clarificationNeedDetector() {
@@ -85,12 +91,6 @@ public class DomainPolicyConfiguration {
     @Bean
     public LoopNodeStateMachine loopNodeStateMachine() {
         return new LoopNodeStateMachine();
-    }
-
-    /** @return Loop Planner */
-    @Bean
-    public LoopPlanner loopPlanner() {
-        return new LoopPlanner();
     }
 
     /** @return Control 启动状态校验器 */

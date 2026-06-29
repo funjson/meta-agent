@@ -50,13 +50,32 @@ public class ProviderConfigService {
      */
     @Transactional(readOnly = true)
     public ProviderConfigStore.ProviderConfig requireDeepSeek() {
-        ProviderConfigStore.ProviderConfig config = repository.find("deepseek");
+        return requireProvider("deepseek");
+    }
+
+    /**
+     * 获取可用 Provider 配置。
+     *
+     * @param providerId Provider ID
+     * @return Provider 配置
+     */
+    @Transactional(readOnly = true)
+    public ProviderConfigStore.ProviderConfig requireProvider(String providerId) {
+        ProviderConfigStore.ProviderConfig config = repository.find(providerId);
         if (!config.enabled()) {
             throw new RuntimeStateException(
                     "PROVIDER_DISABLED",
-                    "DeepSeek provider is disabled");
+                    providerId + " provider is disabled");
         }
         return config;
+    }
+
+    /**
+     * @param providerId Provider ID
+     * @return 是否已有可用密钥
+     */
+    public boolean configured(String providerId) {
+        return secretStore.configured(providerId);
     }
 
     /**
@@ -76,9 +95,9 @@ public class ProviderConfigService {
                     "Persistent secret storage requires META_AGENT_MASTER_KEY and is not enabled");
         }
         validateBaseUrl(request.baseUrl());
-        String secretSource = secretStore.source();
+        String secretSource = secretStore.source(id);
         if (request.apiKey() != null && !request.apiKey().isBlank()) {
-            secretStore.setMemorySecret(request.apiKey());
+            secretStore.setMemorySecret(id, request.apiKey());
             secretSource = "MEMORY";
         }
         boolean updated = repository.update(
@@ -107,6 +126,17 @@ public class ProviderConfigService {
     }
 
     /**
+     * 按 Provider 解析密钥。
+     *
+     * @param providerId Provider ID
+     * @param requestOverride 请求级密钥
+     * @return 实际密钥
+     */
+    public String resolveSecret(String providerId, String requestOverride) {
+        return secretStore.require(providerId, requestOverride);
+    }
+
+    /**
      * 转换为不含密钥值的 API 视图。
      *
      * @param config 配置记录
@@ -121,8 +151,8 @@ public class ProviderConfigService {
                 config.baseUrl(),
                 config.modelName(),
                 config.enabled(),
-                secretStore.configured(),
-                secretStore.source(),
+                secretStore.configured(config.id()),
+                secretStore.source(config.id()),
                 config.version());
     }
 

@@ -31,4 +31,24 @@ public class DeepSeekModelProvider implements ModelProvider {
     public ModelResponse generate(ModelRequest request) {
         return client.generate(request, null);
     }
+
+    @Override
+    public boolean supportsNativeToolCalling() {
+        return client.supportsNativeToolCalling();
+    }
+
+    @Override
+    public boolean supportsNativeToolCalling(String modelId) {
+        return client.supportsNativeToolCalling(modelId);
+    }
+
+    @Override
+    public boolean supportsThinkingMode() {
+        return client.supportsThinkingMode();
+    }
+
+    @Override
+    public boolean supportsThinkingMode(String modelId) {
+        return client.supportsThinkingMode(modelId);
+    }
 }

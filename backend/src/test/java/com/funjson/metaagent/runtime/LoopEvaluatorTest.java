@@ -49,6 +49,24 @@ class LoopEvaluatorTest {
     }
 
     @Test
+    void toolObservationAdjustsInsteadOfCompleting() {
+        var evaluation = evaluator.evaluate(
+                context(0, 1),
+                new LoopActionResult(
+                        LoopActionType.FILE_SEARCH,
+                        "tool:test",
+                        "找到 3 个候选文件",
+                        java.util.Map.of()),
+                LoopExecutionPolicy.baseline(),
+                1);
+
+        assertThat(evaluation.decision())
+                .isEqualTo(LoopEvaluationDecision.ADJUST);
+        assertThat(evaluation.summary()).contains("工具动作已完成");
+        assertThat(evaluation.feedback()).contains("工具 Observation");
+    }
+
+    @Test
     void doesNotCompleteWhenModelAsksForMissingInput() {
         var evaluation = evaluator.evaluate(
                 context(0, 1),
@@ -88,6 +106,19 @@ class LoopEvaluatorTest {
     }
 
     @Test
+    void doesNotCompleteWhenModelPromisesAnotherSearch() {
+        var evaluation = evaluator.evaluate(
+                context(0, 1),
+                actionResult("刚才没查到准确结果，让我重新搜索一下北京天气。"),
+                LoopExecutionPolicy.baseline(),
+                1);
+
+        assertThat(evaluation.decision())
+                .isEqualTo(LoopEvaluationDecision.ADJUST);
+        assertThat(evaluation.feedback()).contains("不要承诺后续工具调用");
+    }
+
+    @Test
     void adjustsWhenEmptyResultStillHasBudget() {
         var evaluation = evaluator.evaluate(
                 context(0, 1),
@@ -105,7 +136,7 @@ class LoopEvaluatorTest {
         var evaluation = evaluator.evaluate(
                 context(2, 3),
                 actionResult(""),
-                LoopExecutionPolicy.baseline(),
+                new LoopExecutionPolicy(2, 3),
                 3);
 
         assertThat(evaluation.decision())

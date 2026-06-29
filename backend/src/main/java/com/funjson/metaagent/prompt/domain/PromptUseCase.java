@@ -52,6 +52,18 @@ public enum PromptUseCase {
                     "iterationNo",
                     "feedback")),
 
+    /** Loop Kernel 在 ReAct Planning 阶段选择下一步结构化动作的 Prompt。 */
+    LOOP_ACTION_PLANNING(
+            "loop.action-planning",
+            "v1",
+            "classpath:prompts/loop/action-planning/v1/system.md",
+            "classpath:prompts/loop/action-planning/v1/user.md",
+            Set.of(
+                    "goal",
+                    "contextSummary",
+                    "capabilitySummary",
+                    "feedback")),
+
     /** Skill 导入时的不可变 Manifest 编译 Prompt。 */
     SKILL_COMPILATION(
             "capability.skill-compilation",

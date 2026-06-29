@@ -2,6 +2,7 @@ package com.funjson.metaagent.tool.application;
 
 import java.util.List;
 
+import com.funjson.metaagent.provider.domain.ModelToolSpec;
 import com.funjson.metaagent.tool.application.port.out.ToolStore;
 import com.funjson.metaagent.tool.domain.ToolDefinition;
 import com.funjson.metaagent.tool.domain.ToolType;
@@ -47,11 +48,39 @@ public class ToolCatalogService {
                     List.of("retrieval:read"),
                     true),
             new ToolDefinition(
+                    "web.search",
+                    ToolType.RETRIEVAL,
+                    "执行受控网络搜索，返回标题、URL 和摘要。适合最新信息、外部资料和事实核验。",
+                    "{\"type\":\"object\",\"required\":[\"query\"],\"properties\":{\"query\":{\"type\":\"string\"},\"limit\":{\"type\":\"integer\"}}}",
+                    List.of("web:search"),
+                    true),
+            new ToolDefinition(
+                    "file.list",
+                    ToolType.RETRIEVAL,
+                    "列出当前 Conversation 已上传或生成的受控文件。",
+                    "{\"type\":\"object\",\"properties\":{}}",
+                    List.of("file:read"),
+                    true),
+            new ToolDefinition(
+                    "file.read",
+                    ToolType.RETRIEVAL,
+                    "读取当前 Conversation 中指定文本文件的内容。参数支持 fileId 或 fileName。",
+                    "{\"type\":\"object\",\"properties\":{\"fileId\":{\"type\":\"string\"},\"fileName\":{\"type\":\"string\"},\"maxChars\":{\"type\":\"integer\"}}}",
+                    List.of("file:read"),
+                    true),
+            new ToolDefinition(
                     "file.search",
                     ToolType.RETRIEVAL,
-                    "在用户授权的文件范围中检索证据。",
-                    "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"}}}",
+                    "在当前 Conversation 文件正文中检索片段。参数 query 为空时返回文件预览。",
+                    "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"maxMatches\":{\"type\":\"integer\"}}}",
                     List.of("file:read"),
+                    true),
+            new ToolDefinition(
+                    "file.write",
+                    ToolType.FUNCTION,
+                    "把文本内容写成新的受控 Conversation 文件，不覆盖原文件。",
+                    "{\"type\":\"object\",\"required\":[\"fileName\",\"content\"],\"properties\":{\"fileName\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}}}",
+                    List.of("file:write"),
                     true));
 
     /**
@@ -97,5 +126,30 @@ public class ToolCatalogService {
                         tool.description()))
                 .reduce((left, right) -> left + "\n" + right)
                 .orElse("无可用工具");
+    }
+
+    /**
+     * 生成 Provider 原生 Function Calling 可用的工具 Schema。
+     *
+     * <p>Provider 函数名通常不接受点号，因此这里保留内部 toolId，并把函数名
+     * 转成稳定的下划线形式。模型返回 tool_call 后 Runtime 会映射回原始 toolId。</p>
+     *
+     * @return 模型工具 Schema
+     */
+    public List<ModelToolSpec> modelToolSpecs() {
+        return listAllTools().stream()
+                .map(tool -> new ModelToolSpec(
+                        tool.name(),
+                        functionName(tool.name()),
+                        tool.description(),
+                        tool.inputSchemaJson()))
+                .toList();
+    }
+
+    /**
+     * 把内部 Tool ID 转为 Provider 安全函数名。
+     */
+    private String functionName(String toolId) {
+        return toolId.replaceAll("[^A-Za-z0-9_-]", "_");
     }
 }

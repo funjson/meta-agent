@@ -11,6 +11,7 @@ import com.funjson.metaagent.job.api.JobView;
 import com.funjson.metaagent.task.api.TaskView;
 import com.funjson.metaagent.job.application.port.out.JobStore;
 import com.funjson.metaagent.job.domain.JobCreationContext;
+import com.funjson.metaagent.job.domain.JobReplayCandidate;
 import com.funjson.metaagent.job.domain.JobStatus;
 import com.funjson.metaagent.runtime.domain.RuntimeStateException;
 import com.funjson.metaagent.task.domain.TaskStatus;
@@ -206,6 +207,23 @@ public class JobRepository implements JobStore {
         return mapper.findAllJobs(limit, offset)
                 .stream()
                 .map(this::toJobView)
+                .toList();
+    }
+
+    /**
+     * 查询已提交但尚未物化 TaskRun 的 Job。
+     *
+     * @param limit 返回数量
+     * @return 可重放 Job
+     */
+    public List<JobReplayCandidate> findStartableJobsForReplay(int limit) {
+        return mapper.findStartableJobsForReplay(limit)
+                .stream()
+                .map(row -> new JobReplayCandidate(
+                        uuid(row.get("jobId")),
+                        uuid(row.get("conversationId")),
+                        uuid(row.get("sourceMessageId")),
+                        number(row, "version").longValue()))
                 .toList();
     }
 

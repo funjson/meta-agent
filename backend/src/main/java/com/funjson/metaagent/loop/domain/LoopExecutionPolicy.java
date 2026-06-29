@@ -16,7 +16,7 @@ public record LoopExecutionPolicy(
      * @return 默认策略
      */
     public static LoopExecutionPolicy baseline() {
-        return new LoopExecutionPolicy(2, 3);
+        return new LoopExecutionPolicy(200, 300);
     }
 
     /**

@@ -149,6 +149,10 @@ public interface JobPersistenceMapper {
             @Param("limit") int limit,
             @Param("offset") int offset);
 
+    /** @return 可由持久化 Worker 启动的 Job */
+    List<Map<String, Object>> findStartableJobsForReplay(
+            @Param("limit") int limit);
+
     /**
      * 统计 Job 数量。
      *

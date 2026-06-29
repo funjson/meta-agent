@@ -21,7 +21,10 @@ import com.funjson.metaagent.clarification.application.ClarificationService;
 import com.funjson.metaagent.clarification.domain.ClarificationReasonType;
 import com.funjson.metaagent.clarification.domain.ClarificationRequestDraft;
 import com.funjson.metaagent.clarification.domain.ClarificationSourceType;
+import com.funjson.metaagent.file.api.FileContentView;
+import com.funjson.metaagent.file.application.FileAttachmentService;
 import com.funjson.metaagent.loop.domain.LoopActionResult;
+import com.funjson.metaagent.loop.domain.LoopActionType;
 import com.funjson.metaagent.loop.domain.RunExecutionContext;
 import com.funjson.metaagent.runtime.domain.RuntimeStateException;
 import com.funjson.metaagent.tool.api.ToolInvocationView;
@@ -29,6 +32,7 @@ import com.funjson.metaagent.tool.application.port.out.ToolStore;
 import com.funjson.metaagent.tool.domain.ScriptToolSpec;
 import com.funjson.metaagent.tool.domain.ToolResult;
 import com.funjson.metaagent.tool.domain.ToolType;
+import com.funjson.metaagent.websearch.application.WebSearchService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -48,6 +52,8 @@ public class ToolExecutionService {
     private final ToolStore toolStore;
     private final CapabilityApplicationService capabilityApplicationService;
     private final ClarificationService clarificationService;
+    private final FileAttachmentService fileAttachmentService;
+    private final WebSearchService webSearchService;
     private final ObjectMapper objectMapper;
 
     /**
@@ -55,16 +61,23 @@ public class ToolExecutionService {
      *
      * @param toolStore Tool Store
      * @param capabilityApplicationService Capability 应用服务
+     * @param clarificationService 澄清服务
+     * @param fileAttachmentService 文件附件服务
+     * @param webSearchService Web Search 服务
      * @param objectMapper JSON Mapper
      */
     public ToolExecutionService(
             ToolStore toolStore,
             CapabilityApplicationService capabilityApplicationService,
             ClarificationService clarificationService,
+            FileAttachmentService fileAttachmentService,
+            WebSearchService webSearchService,
             ObjectMapper objectMapper) {
         this.toolStore = toolStore;
         this.capabilityApplicationService = capabilityApplicationService;
         this.clarificationService = clarificationService;
+        this.fileAttachmentService = fileAttachmentService;
+        this.webSearchService = webSearchService;
         this.objectMapper = objectMapper;
     }
 
@@ -94,8 +107,27 @@ public class ToolExecutionService {
     public LoopActionResult invokeForLoop(
             RunExecutionContext context,
             ToolInvocationCommand command) {
+        return invokeForLoop(
+                context,
+                command,
+                LoopActionType.TOOL_CALL);
+    }
+
+    /**
+     * 执行带 Loop 上下文的 Tool 调用，并保留规划动作语义。
+     *
+     * @param context LoopNode 上下文
+     * @param command 调用命令
+     * @param actionType Planning 阶段选择的动作类型
+     * @return Loop Action Result
+     */
+    public LoopActionResult invokeForLoop(
+            RunExecutionContext context,
+            ToolInvocationCommand command,
+            LoopActionType actionType) {
         return LoopActionResult.fromTool(
-                invokeInternal(command, context));
+                invokeInternal(command, context),
+                actionType);
     }
 
     /**
@@ -167,6 +199,11 @@ public class ToolExecutionService {
             case "skill.load" -> skillLoad(invocationId, command, context);
             case "clarification.request" ->
                     clarificationRequest(invocationId, command, context);
+            case "web.search" -> webSearch(invocationId, command);
+            case "file.list" -> fileList(invocationId, context);
+            case "file.read" -> fileRead(invocationId, command, context);
+            case "file.search" -> fileSearch(invocationId, command, context);
+            case "file.write" -> fileWrite(invocationId, command, context);
             default -> executeScriptTool(invocationId, command);
         };
     }
@@ -280,6 +317,207 @@ public class ToolExecutionService {
                         "question", question,
                         "contractJson", contractJson,
                         "reasonType", reasonType.name()));
+    }
+
+    /**
+     * 执行网络搜索。
+     *
+     * @param invocationId ToolInvocation ID
+     * @param command Tool 命令
+     * @return 搜索结果
+     */
+    private ToolResult webSearch(
+            UUID invocationId,
+            ToolInvocationCommand command) {
+        String query = required(command.arguments(), "query");
+        int limit = intArgument(command.arguments(), "limit", 5);
+        var results = webSearchService.search(query, limit);
+        String content = results.isEmpty()
+                ? "没有返回搜索结果。"
+                : results.stream()
+                        .map(result -> "- %s\n  url: %s\n  snippet: %s%s"
+                                .formatted(
+                                        result.title(),
+                                        result.url(),
+                                        result.snippet(),
+                                        result.publishedAt() == null
+                                                ? ""
+                                                : "\n  publishedAt: "
+                                                        + result.publishedAt()))
+                        .reduce((left, right) -> left + "\n" + right)
+                        .orElse("");
+        return new ToolResult(
+                invocationId,
+                true,
+                "Web search returned " + results.size() + " results",
+                content,
+                Map.of(
+                        "query", query,
+                        "results", results,
+                        "stdout", content));
+    }
+
+    /**
+     * 列出当前 Conversation 文件。
+     *
+     * @param invocationId ToolInvocation ID
+     * @param context LoopNode 上下文
+     * @return 文件列表结果
+     */
+    private ToolResult fileList(
+            UUID invocationId,
+            RunExecutionContext context) {
+        UUID conversationId = requireConversation(context);
+        var files = fileAttachmentService.list(conversationId);
+        String content = files.isEmpty()
+                ? "当前 Conversation 没有上传文件。"
+                : files.stream()
+                        .map(file -> "- id=%s name=%s type=%s size=%d"
+                                .formatted(
+                                        file.id(),
+                                        file.fileName(),
+                                        file.contentType(),
+                                        file.sizeBytes()))
+                        .reduce((left, right) -> left + "\n" + right)
+                        .orElse("");
+        return new ToolResult(
+                invocationId,
+                true,
+                "File list returned " + files.size() + " files",
+                content,
+                Map.of(
+                        "files", files,
+                        "stdout", content));
+    }
+
+    /**
+     * 读取当前 Conversation 文本文件。
+     *
+     * @param invocationId ToolInvocation ID
+     * @param command Tool 命令
+     * @param context LoopNode 上下文
+     * @return 文件正文结果
+     */
+    private ToolResult fileRead(
+            UUID invocationId,
+            ToolInvocationCommand command,
+            RunExecutionContext context) {
+        UUID conversationId = requireConversation(context);
+        int maxChars = intArgument(command.arguments(), "maxChars", 30_000);
+        FileContentView content;
+        Object fileId = command.arguments().get("fileId");
+        if (fileId != null && !String.valueOf(fileId).isBlank()) {
+            content = fileAttachmentService.read(
+                    conversationId,
+                    UUID.fromString(String.valueOf(fileId)),
+                    maxChars);
+        } else {
+            content = fileAttachmentService.readByName(
+                    conversationId,
+                    required(command.arguments(), "fileName"),
+                    maxChars);
+        }
+        String rendered = """
+                文件：%s
+                fileId：%s
+                truncated：%s
+
+                %s
+                """.formatted(
+                content.fileName(),
+                content.id(),
+                content.truncated(),
+                content.content()).trim();
+        return new ToolResult(
+                invocationId,
+                true,
+                "File read completed: " + content.fileName(),
+                rendered,
+                Map.of(
+                        "fileId", content.id(),
+                        "fileName", content.fileName(),
+                        "contentType", content.contentType(),
+                        "truncated", content.truncated(),
+                        "stdout", rendered));
+    }
+
+    /**
+     * 搜索当前 Conversation 文件。
+     *
+     * @param invocationId ToolInvocation ID
+     * @param command Tool 命令
+     * @param context LoopNode 上下文
+     * @return 搜索结果
+     */
+    private ToolResult fileSearch(
+            UUID invocationId,
+            ToolInvocationCommand command,
+            RunExecutionContext context) {
+        UUID conversationId = requireConversation(context);
+        String query = String.valueOf(
+                command.arguments().getOrDefault("query", ""));
+        int maxMatches = intArgument(
+                command.arguments(),
+                "maxMatches",
+                10);
+        var matches = fileAttachmentService.search(
+                conversationId,
+                query,
+                maxMatches);
+        String content = matches.isEmpty()
+                ? "没有找到匹配的文件片段。"
+                : matches.stream()
+                        .map(match -> "- file=%s id=%s snippet=%s"
+                                .formatted(
+                                        match.fileName(),
+                                        match.fileId(),
+                                        match.snippet()
+                                                .replaceAll("\\s+", " ")
+                                                .trim()))
+                        .reduce((left, right) -> left + "\n" + right)
+                        .orElse("");
+        return new ToolResult(
+                invocationId,
+                true,
+                "File search returned " + matches.size() + " matches",
+                content,
+                Map.of(
+                        "query", query,
+                        "matches", matches,
+                        "stdout", content));
+    }
+
+    /**
+     * 写入新的受控 Conversation 文本文件。
+     *
+     * @param invocationId ToolInvocation ID
+     * @param command Tool 命令
+     * @param context LoopNode 上下文
+     * @return 写入结果
+     */
+    private ToolResult fileWrite(
+            UUID invocationId,
+            ToolInvocationCommand command,
+            RunExecutionContext context) {
+        UUID conversationId = requireConversation(context);
+        var file = fileAttachmentService.writeText(
+                conversationId,
+                required(command.arguments(), "fileName"),
+                required(command.arguments(), "content"));
+        String content = "已写入文件：%s（id=%s，size=%d）".formatted(
+                file.fileName(),
+                file.id(),
+                file.sizeBytes());
+        return new ToolResult(
+                invocationId,
+                true,
+                "File write completed: " + file.fileName(),
+                content,
+                Map.of(
+                        "fileId", file.id(),
+                        "fileName", file.fileName(),
+                        "sizeBytes", file.sizeBytes(),
+                        "stdout", content));
     }
 
     /**
@@ -445,6 +683,10 @@ public class ToolExecutionService {
             case "skill.search" -> ToolType.SKILL_SEARCH;
             case "skill.load" -> ToolType.SKILL_LOAD;
             case "clarification.request" -> ToolType.CLARIFICATION;
+            case "web.search" -> ToolType.RETRIEVAL;
+            case "file.list", "file.read", "file.search" ->
+                    ToolType.RETRIEVAL;
+            case "file.write" -> ToolType.FUNCTION;
             default -> ToolType.FUNCTION;
         };
     }
@@ -475,6 +717,44 @@ public class ToolExecutionService {
                     "Tool argument is required: " + key);
         }
         return String.valueOf(value);
+    }
+
+    /**
+     * 获取当前 Tool 调用所属 Conversation。
+     *
+     * @param context LoopNode 上下文
+     * @return Conversation ID
+     */
+    private UUID requireConversation(RunExecutionContext context) {
+        if (context == null) {
+            throw new RuntimeStateException(
+                    "TOOL_CONTEXT_REQUIRED",
+                    "File tools require Loop context");
+        }
+        return toolStore.findConversationIdByJobId(context.jobId())
+                .orElseThrow(() -> new RuntimeStateException(
+                        "CONVERSATION_NOT_FOUND",
+                        "Job conversation is unavailable: "
+                                + context.jobId()));
+    }
+
+    /**
+     * 读取整数参数。
+     */
+    private int intArgument(
+            Map<String, Object> arguments,
+            String key,
+            int fallback) {
+        Object value = arguments.get(key);
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            return value == null ? fallback : Integer.parseInt(
+                    String.valueOf(value));
+        } catch (NumberFormatException exception) {
+            return fallback;
+        }
     }
 
     /** 解析 JSON Map。 */

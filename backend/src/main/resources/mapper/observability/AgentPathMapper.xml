@@ -60,7 +60,7 @@
             CONCAT('control-turn:', BIN_TO_UUID(id)) AS id,
             CONCAT('message:', BIN_TO_UUID(source_message_id)) AS parentId,
             'CONTROL_TURN' AS nodeType,
-            'ControlTurn · 控制轮次' AS label,
+            'Control · 控制轮次' AS label,
             status,
             CONCAT(
                 '幂等控制轮次',
@@ -81,7 +81,7 @@
             CONCAT('control:', BIN_TO_UUID(id)) AS id,
             CONCAT('control-turn:', BIN_TO_UUID(control_turn_id)) AS parentId,
             'CONTROL_DECISION' AS nodeType,
-            'Control · 意图识别' AS label,
+            '意图识别' AS label,
             intent_type AS status,
             decision_summary AS summary,
             created_at AS occurredAt
@@ -165,7 +165,11 @@
                 CONCAT('conversation:', BIN_TO_UUID(request.conversation_id))
             ) AS parentId,
             'CLARIFICATION_REQUEST' AS nodeType,
-            CONCAT('Clarification · ', request.reason_type) AS label,
+            CASE
+                WHEN request.status = 'OPEN' THEN '等待用户补充'
+                WHEN request.status = 'RESOLVED' THEN '补充信息已确认'
+                ELSE '澄清请求'
+            END AS label,
             request.status,
             CONCAT(
                 LEFT(
@@ -187,7 +191,7 @@
             CONCAT('task-run:', BIN_TO_UUID(run.id)) AS id,
             CONCAT('task:', BIN_TO_UUID(run.task_id)) AS parentId,
             'TASK_RUN' AS nodeType,
-            CONCAT('TaskRun · 执行 ', run.run_type) AS label,
+            CONCAT('任务执行 · ', run.run_type) AS label,
             run.status,
             LEFT(REPLACE(REPLACE(task.goal, '\r', ' '), '\n', ' '), 180) AS summary,
             run.started_at AS occurredAt
@@ -206,13 +210,12 @@
                 BIN_TO_UUID(loop_record.task_run_id)
             ) AS parentId,
             'LOOP_RUN' AS nodeType,
-            CONCAT(
-                'LoopRun · ',
-                loop_record.parent_type
-            ) AS label,
+            'Loop · 执行闭环' AS label,
             loop_record.status,
             CONCAT(
-                'Loop Kernel 执行闭环 · 递归深度 ',
+                '执行单元：',
+                loop_record.parent_type,
+                ' · 递归深度 ',
                 loop_record.recursion_depth
             ) AS summary,
             loop_record.started_at AS occurredAt
@@ -234,19 +237,27 @@
             END AS parentId,
             'LOOP_NODE' AS nodeType,
             CONCAT(
-                'LoopNode #',
-                node.iteration_no,
-                ' · ',
+                'Loop · ',
                 CASE
                     WHEN node.parent_node_id IS NOT NULL
                          AND JSON_UNQUOTE(JSON_EXTRACT(
                                  node.input_json,
                                  '$.inheritedFeedback'
                              )) LIKE '用户已补充澄清信息%'
-                        THEN '澄清恢复'
+                        THEN '继续生成最终结果'
                     WHEN node.parent_node_id IS NOT NULL
-                        THEN '子循环调整'
-                    ELSE node.action_type
+                        THEN '根据反馈调整'
+                    WHEN node.action_type = 'MODEL_CALL'
+                        THEN '模型生成'
+                    WHEN node.action_type = 'TOOL_CALL'
+                        THEN '调用工具'
+                    WHEN node.action_type = 'CHILD_JOB'
+                        THEN '派生子任务'
+                    WHEN node.action_type = 'CLARIFICATION_REQUEST'
+                        THEN '等待用户补充'
+                    WHEN node.action_type = 'CHILD_LOOP'
+                        THEN '进入子循环'
+                    ELSE '执行节点'
                 END
             ) AS label,
             node.status,
@@ -257,16 +268,22 @@
                              '$.inheritedFeedback'
                          )) LIKE '用户已补充澄清信息%'
                     THEN CONCAT(
-                        '澄清恢复后重新生成结果 · 目标：',
+                        '收到用户补充后继续推进 · 第 ',
+                        node.iteration_no,
+                        ' 轮 · 目标：',
                         LEFT(REPLACE(REPLACE(node.goal, '\r', ' '), '\n', ' '), 130)
                     )
                 WHEN node.parent_node_id IS NOT NULL
                     THEN CONCAT(
-                        '根据父节点反馈调整后继续执行 · 目标：',
+                        '根据上一轮反馈调整后继续执行 · 第 ',
+                        node.iteration_no,
+                        ' 轮 · 目标：',
                         LEFT(REPLACE(REPLACE(node.goal, '\r', ' '), '\n', ' '), 130)
                     )
                 ELSE CONCAT(
-                    '阶段 ',
+                    '第 ',
+                    node.iteration_no,
+                    ' 轮 · 当前阶段 ',
                     node.current_phase,
                     ' · 目标：',
                     LEFT(REPLACE(REPLACE(node.goal, '\r', ' '), '\n', ' '), 130)

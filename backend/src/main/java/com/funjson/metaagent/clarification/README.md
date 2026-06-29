@@ -23,11 +23,13 @@ classDiagram
   class ClarificationRequest
   class ClarificationRequestDraft
   class ClarificationResolution
+  class ClarificationUserResponseRenderer
 
   ClarificationService --> ClarificationStore
   ClarificationService --> ClarificationPolicy
   ClarificationStore ..> ClarificationRequest
   ClarificationService ..> ClarificationResolution
+  ClarificationUserResponseRenderer ..> ClarificationRequest
 ```
 
 ## 核心流程
@@ -54,6 +56,7 @@ TaskGraph / Loop / Tool detects missing input
 - `ClarificationService.recordPartialAnswer`：记录多轮补充中的结构化事实，但不恢复执行。
 - `ClarificationResolution`：记录用户回答被绑定回哪个恢复目标。
 - `ClarificationRequest.contractJson`：固定本次澄清合同，避免后续追问内容随模型自由漂移。
+- `ClarificationUserResponseRenderer`：把合同字段、缺失字段和帮助说明渲染为中文用户可见文案；系统字段名和 JSON 不直接进入聊天室。
 
 ## 扩展点与测试入口
 

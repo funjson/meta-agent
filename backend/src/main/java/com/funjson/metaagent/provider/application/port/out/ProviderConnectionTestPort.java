@@ -8,6 +8,9 @@ import com.funjson.metaagent.provider.domain.ModelResponse;
  */
 public interface ProviderConnectionTestPort {
 
+    /** @return Provider ID */
+    String providerId();
+
     /** @return Provider 测试响应 */
     ModelResponse generate(
             ModelRequest request,

@@ -25,6 +25,7 @@ public class ControlKernel {
     private final ControlJobWorker jobWorker;
     private final JobService jobService;
     private final ClarificationService clarificationService;
+    private final ControlUserResponseRenderer controlUserResponseRenderer;
 
     /**
      * 创建聊天编排服务。
@@ -35,6 +36,7 @@ public class ControlKernel {
      * @param jobWorker 后台 Job Worker
      * @param jobService Job Service
      * @param clarificationService 澄清请求服务
+     * @param controlUserResponseRenderer Control 层用户响应渲染器
      */
     public ControlKernel(
             ControlTurnInitializer initializer,
@@ -42,13 +44,15 @@ public class ControlKernel {
             ConversationService conversationService,
             ControlJobWorker jobWorker,
             JobService jobService,
-            ClarificationService clarificationService) {
+            ClarificationService clarificationService,
+            ControlUserResponseRenderer controlUserResponseRenderer) {
         this.initializer = initializer;
         this.assistantMessageService = assistantMessageService;
         this.conversationService = conversationService;
         this.jobWorker = jobWorker;
         this.jobService = jobService;
         this.clarificationService = clarificationService;
+        this.controlUserResponseRenderer = controlUserResponseRenderer;
     }
 
     /**
@@ -69,17 +73,21 @@ public class ControlKernel {
                 idempotencyKey,
                 request);
         if (initialization.immediateAssistantMessage() != null) {
-            assistantMessageService.append(
-                    conversationId,
-                    initialization.userMessage().id(),
-                    initialization.job() == null
-                            ? null
-                            : initialization.job().id(),
-                    null,
-                    initialization.immediateAssistantMessage(),
-                    initialization.immediateAssistantMessageType() == null
-                            ? "CLARIFICATION_QUESTION"
-                            : initialization.immediateAssistantMessageType());
+            appendImmediateMessage(conversationId, initialization);
+            // 只有用户可见提示、没有后台派发时，本轮已经结束；继续向下会重复渲染 Control 提示。
+            if (initialization.dispatches().isEmpty()) {
+                return new ChatTurnResult(
+                        initialization.controlTurnId(),
+                        conversationService.get(conversationId),
+                        initialization.decision(),
+                        initialization.job() == null
+                                ? null
+                                : jobService.get(initialization.job().id()),
+                        null);
+            }
+        }
+        if (!initialization.dispatches().isEmpty()) {
+            submitDispatches(conversationId, initialization);
             return new ChatTurnResult(
                     initialization.controlTurnId(),
                     conversationService.get(conversationId),
@@ -92,13 +100,14 @@ public class ControlKernel {
         if (initialization.job() == null) {
             IntentType intentType = IntentType.valueOf(
                     initialization.decision().intentType());
-            String messageType = userVisibleMessageType(intentType);
+            String messageType = controlUserResponseRenderer.messageType(
+                    intentType);
             assistantMessageService.append(
                     conversationId,
                     initialization.userMessage().id(),
                     null,
                     null,
-                    userVisibleControlMessage(
+                    controlUserResponseRenderer.messageText(
                             intentType,
                             initialization.decision().decisionSummary()),
                     messageType);
@@ -159,53 +168,47 @@ public class ControlKernel {
     }
 
     /**
-     * 选择 Control 层无 Job 响应的消息类型。
-     *
-     * @param intentType 当前意图
-     * @return 可见消息类型
+     * Appends an immediate user-facing message produced by Control.
      */
-    private String userVisibleMessageType(IntentType intentType) {
-        if (intentType == IntentType.PENDING_INTERACTION_HELP) {
-            return "CLARIFICATION_QUESTION";
-        }
-        return isControlCommand(intentType)
-                ? "CONTROL_COMMAND_ACK"
-                : "CLARIFICATION_DISAMBIGUATION";
+    private void appendImmediateMessage(
+            UUID conversationId,
+            ControlTurnInitialization initialization) {
+        assistantMessageService.append(
+                conversationId,
+                initialization.userMessage().id(),
+                initialization.job() == null
+                        ? null
+                        : initialization.job().id(),
+                null,
+                initialization.immediateAssistantMessage(),
+                initialization.immediateAssistantMessageType() == null
+                        ? "CLARIFICATION_QUESTION"
+                        : initialization.immediateAssistantMessageType());
     }
 
     /**
-     * 渲染 Control 层无 Job 响应，避免把内部控制命令 ACK 误用于澄清回答。
-     *
-     * @param intentType 当前意图
-     * @param decisionSummary 决策摘要或用户可见说明
-     * @return 用户可见文本
+     * Submits all background execution requests emitted by a Control turn.
      */
-    private String userVisibleControlMessage(
-            IntentType intentType,
-            String decisionSummary) {
-        if (intentType == IntentType.PENDING_INTERACTION_AMBIGUOUS
-                || intentType == IntentType.PENDING_INTERACTION_HELP
-                || intentType == IntentType.CLARIFICATION_ANSWER) {
-            return decisionSummary;
+    private void submitDispatches(
+            UUID conversationId,
+            ControlTurnInitialization initialization) {
+        for (ControlDispatchCommand dispatch : initialization.dispatches()) {
+            if (dispatch.resume()) {
+                jobWorker.submitResume(new ControlJobWorker.TaskRunResumeCommand(
+                        conversationId,
+                        initialization.userMessage().id(),
+                        dispatch.jobId(),
+                        dispatch.resumeTaskRunId()));
+                continue;
+            }
+            jobWorker.submit(new ControlJobWorker.JobStartCommand(
+                    conversationId,
+                    initialization.userMessage().id(),
+                    dispatch.jobId(),
+                    dispatch.jobVersion(),
+                    "chat-run:" + initialization.userMessage().id()
+                            + ":" + dispatch.jobId()));
         }
-        if (isControlCommand(intentType)) {
-            return "控制命令已记录，但对应的暂停、恢复、取消或状态查询动作"
-                    + "还需要后续接入正式命令处理器。";
-        }
-        return "我已经收到这条消息，但当前没有匹配到可执行任务或等待交互。"
-                + "请重新描述目标，或明确说明要继续哪个任务。";
     }
 
-    /**
-     * 判断是否是正式控制命令。
-     *
-     * @param intentType 当前意图
-     * @return 是否应使用 CONTROL_COMMAND_ACK
-     */
-    private boolean isControlCommand(IntentType intentType) {
-        return intentType == IntentType.PAUSE_JOB
-                || intentType == IntentType.RESUME_JOB
-                || intentType == IntentType.CANCEL_JOB
-                || intentType == IntentType.QUERY_STATUS;
-    }
 }

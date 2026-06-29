@@ -12,6 +12,7 @@ classDiagram
   JobExecutionCoordinator --> JobRunScheduler
   JobExecutionCoordinator --> ChildJobCoordinator
   JobExecutionCoordinator --> JobCompletionCoordinator
+  JobReplayService --> JobStore
   ChildJobCoordinator --> TaskGraphTemplateService
   ChildJobCoordinator --> TaskGraphPlanner
 ```
@@ -22,11 +23,15 @@ classDiagram
 
 ChildJobRequest → 校验递归/预算边界 → 创建子 Job 与派生事实 → 父运行等待恢复。
 
+Control 事务提交后，如果进程在提交与 Worker 入队之间崩溃，`JobReplayService` 会扫描
+`CREATED` 且存在 READY Task、但还没有 TaskRun 的 Job，并重新提交 `JobStartCommand`。
+
 ## 类与功能关系
 
 - `JobService`：Job 与 TaskGraph 创建/查询。
 - `TaskGraphTemplateService`：模板版本、checksum 与匹配。
 - `ChildJobCoordinator`：阻塞型子 Job 物化。
+- `JobReplayService`：补齐 Control 提交成功但后台 Worker 未启动的恢复缺口。
 - `JobCompletionPolicy`：全局验收。
 
 ## 所有权与依赖
@@ -36,4 +41,3 @@ ChildJobRequest → 校验递归/预算边界 → 创建子 Job 与派生事实 
 ## 扩展点与测试入口
 
 扩展模板匹配、调度器和子 Job Worker；入口为 Job/Template API、策略测试与 ArchUnit。
-

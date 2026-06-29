@@ -21,6 +21,17 @@ type ConversationView = {
   messages: MessageView[]
 }
 
+type ConversationFileView = {
+  id: string
+  conversationId: string
+  fileName: string
+  contentType: string
+  sizeBytes: number
+  checksumSha256: string
+  status: string
+  createdAt: string
+}
+
 type ControlDecisionView = {
   id: string
   controlTurnId: string
@@ -66,8 +77,11 @@ type AgentPathView = {
   nodes: AgentPathNode[]
 }
 
+type PathDisplayMode = 'compact' | 'debug'
+
 type ProviderConfigView = {
   id: string
+  providerType: string
   displayName: string
   baseUrl: string
   modelName: string
@@ -75,6 +89,36 @@ type ProviderConfigView = {
   configured: boolean
   secretSource: string
   version: number
+}
+
+type ModelCapabilities = {
+  toolCalling: boolean
+  reasoning: boolean
+  reasoningContent: boolean
+  thinkingMode: boolean
+  vision: boolean
+}
+
+type ModelSpecView = {
+  id: string
+  displayName: string
+  providerId: string
+  providerModel: string
+  family: string
+  contextWindow: number
+  modalities: string[]
+  capabilities: ModelCapabilities
+}
+
+type ModelCatalogView = {
+  defaultModelId: string
+  fallbackModelId: string
+  models: ModelSpecView[]
+}
+
+type ProviderDraft = {
+  baseUrl: string
+  apiKey: string
 }
 
 type ProviderTestResult = {
@@ -90,23 +134,53 @@ export function App() {
   const [conversation, setConversation] = useState<ConversationView | null>(null)
   const [conversations, setConversations] = useState<ConversationView[]>([])
   const [path, setPath] = useState<AgentPathNode[]>([])
+  const [files, setFiles] = useState<ConversationFileView[]>([])
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
+  const [uploadingFiles, setUploadingFiles] = useState(false)
   const [showThinking, setShowThinking] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copyNotice, setCopyNotice] = useState<string | null>(null)
   const [providerMode, setProviderMode] = useState('auto')
   const [providerPanelOpen, setProviderPanelOpen] = useState(false)
-  const [deepSeekConfig, setDeepSeekConfig] = useState<ProviderConfigView | null>(null)
-  const [deepSeekBaseUrl, setDeepSeekBaseUrl] = useState('https://api.deepseek.com')
-  const [deepSeekModel, setDeepSeekModel] = useState('deepseek-v4-flash')
-  const [deepSeekApiKey, setDeepSeekApiKey] = useState('')
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalogView | null>(null)
+  const [providerConfigs, setProviderConfigs] = useState<ProviderConfigView[]>([])
+  const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderDraft>>({})
+  const [settingsModelId, setSettingsModelId] = useState('deepseek-chat')
   const [providerBusy, setProviderBusy] = useState(false)
   const [providerTest, setProviderTest] = useState<ProviderTestResult | null>(null)
+  const [pathMode, setPathMode] = useState<PathDisplayMode>('compact')
   const [collapsedPathNodes, setCollapsedPathNodes] = useState<Set<string>>(
     () => new Set(),
   )
   const messagesRef = useRef<HTMLDivElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  const selectedSettingsModel = useMemo(
+    () => modelCatalog?.models.find((model) => model.id === settingsModelId)
+      ?? modelCatalog?.models.find((model) => model.id === providerMode)
+      ?? modelCatalog?.models.find((model) => model.providerId !== 'fake')
+      ?? modelCatalog?.models[0]
+      ?? null,
+    [modelCatalog, providerMode, settingsModelId],
+  )
+
+  const selectedProviderConfig = useMemo(
+    () => providerConfigs.find((provider) => provider.id === selectedSettingsModel?.providerId) ?? null,
+    [providerConfigs, selectedSettingsModel?.providerId],
+  )
+
+  const selectedProviderDraft = selectedSettingsModel
+    ? providerDrafts[selectedSettingsModel.providerId]
+    : undefined
+
+  const currentExecutorModel = useMemo(
+    () => modelCatalog?.models.find((model) => model.id === providerMode) ?? null,
+    [modelCatalog, providerMode],
+  )
+
+  const executorConfigured = currentExecutorModel?.providerId === 'fake'
+    || providerConfigs.find((provider) => provider.id === currentExecutorModel?.providerId)?.configured
 
   const loadPath = useCallback(async (conversationId: string) => {
     const response = await fetch(`/api/v1/conversations/${conversationId}/agent-path`)
@@ -127,6 +201,16 @@ export function App() {
     return value
   }, [])
 
+  const loadFiles = useCallback(async (conversationId: string) => {
+    const response = await fetch(`/api/v1/conversations/${conversationId}/files`)
+    if (!response.ok) {
+      throw new Error(`文件列表加载失败（${response.status}）`)
+    }
+    const value = (await response.json()) as ConversationFileView[]
+    setFiles(value)
+    return value
+  }, [])
+
   const loadConversation = useCallback(async (conversationId: string) => {
     const response = await fetch(`/api/v1/conversations/${conversationId}`)
     if (!response.ok) {
@@ -135,9 +219,12 @@ export function App() {
     const value = (await response.json()) as ConversationView
     localStorage.setItem(conversationStorageKey, value.id)
     setConversation(value)
-    await loadPath(value.id)
+    await Promise.all([
+      loadPath(value.id),
+      loadFiles(value.id),
+    ])
     return value
-  }, [loadPath])
+  }, [loadFiles, loadPath])
 
   const createConversation = useCallback(async () => {
     const response = await fetch('/api/v1/conversations', {
@@ -159,6 +246,7 @@ export function App() {
       ...current.filter((item) => item.id !== value.id),
     ])
     setPath([])
+    setFiles([])
     setCollapsedPathNodes(new Set())
     return value
   }, [])
@@ -169,19 +257,36 @@ export function App() {
       throw new Error(`Provider 配置加载失败（${response.status}）`)
     }
     const providers = (await response.json()) as ProviderConfigView[]
-    const deepSeek = providers.find((provider) => provider.id === 'deepseek') ?? null
-    setDeepSeekConfig(deepSeek)
-    if (deepSeek) {
-      setDeepSeekBaseUrl(deepSeek.baseUrl)
-      setDeepSeekModel(deepSeek.modelName)
+    setProviderConfigs(providers)
+    setProviderDrafts((current) => {
+      const next = { ...current }
+      providers.forEach((provider) => {
+        next[provider.id] = {
+          baseUrl: next[provider.id]?.baseUrl ?? provider.baseUrl,
+          apiKey: next[provider.id]?.apiKey ?? '',
+        }
+      })
+      return next
+    })
+  }, [])
+
+  const loadModels = useCallback(async () => {
+    const response = await fetch('/api/v1/settings/models')
+    if (!response.ok) {
+      throw new Error(`模型目录加载失败（${response.status}）`)
     }
+    const catalog = (await response.json()) as ModelCatalogView
+    setModelCatalog(catalog)
+    setSettingsModelId((value) => value || catalog.defaultModelId)
+    return catalog
   }, [])
 
   useEffect(() => {
     async function initialize() {
       setError(null)
       try {
-        await loadProviders()
+        const [, catalog] = await Promise.all([loadProviders(), loadModels()])
+        setProviderMode((value) => value || catalog.defaultModelId)
         const knownConversations = await loadConversations()
         const storedId = localStorage.getItem(conversationStorageKey)
         const startupConversationId = storedId
@@ -202,7 +307,7 @@ export function App() {
       }
     }
     initialize()
-  }, [createConversation, loadConversation, loadConversations, loadProviders])
+  }, [createConversation, loadConversation, loadConversations, loadModels, loadProviders])
 
   useEffect(() => {
     if (!conversation?.id || sending) return undefined
@@ -233,8 +338,14 @@ export function App() {
     })
   }, [conversation?.messages.length, showThinking])
 
+  const displayPath = useMemo(() => (
+    pathMode === 'debug'
+      ? path
+      : path.filter(isCompactPathNode)
+  ), [path, pathMode])
+
   const pathDepths = useMemo(() => {
-    const byId = new Map(path.map((node) => [node.id, node]))
+    const byId = new Map(displayPath.map((node) => [node.id, node]))
     const depths = new Map<string, number>()
     function depth(node: AgentPathNode, visited = new Set<string>()): number {
       const known = depths.get(node.id)
@@ -246,25 +357,25 @@ export function App() {
       depths.set(node.id, value)
       return value
     }
-    path.forEach((node) => depth(node))
+    displayPath.forEach((node) => depth(node))
     return depths
-  }, [path])
+  }, [displayPath])
 
   const pathChildren = useMemo(() => {
     const children = new Map<string, AgentPathNode[]>()
-    path.forEach((node) => {
+    displayPath.forEach((node) => {
       if (!node.parentId) return
       const siblings = children.get(node.parentId) ?? []
       siblings.push(node)
       children.set(node.parentId, siblings)
     })
     return children
-  }, [path])
+  }, [displayPath])
 
   const visiblePath = useMemo(() => {
-    const byId = new Map(path.map((node) => [node.id, node]))
+    const byId = new Map(displayPath.map((node) => [node.id, node]))
     // 接口返回扁平路径；只要任一祖先收起，当前节点就不参与渲染。
-    return path.filter((node) => {
+    return displayPath.filter((node) => {
       let parentId = node.parentId
       const visited = new Set<string>()
       while (parentId && !visited.has(parentId)) {
@@ -274,7 +385,7 @@ export function App() {
       }
       return true
     })
-  }, [collapsedPathNodes, path])
+  }, [collapsedPathNodes, displayPath])
 
   /** 在同一路径节点上重复点击时切换其子树的展开状态。 */
   function togglePathNode(nodeId: string) {
@@ -353,6 +464,33 @@ export function App() {
     }
   }
 
+  async function uploadFiles(selected: FileList | null) {
+    if (!selected?.length || !conversation || uploadingFiles) return
+    setUploadingFiles(true)
+    setError(null)
+    try {
+      for (const file of Array.from(selected)) {
+        const body = new FormData()
+        body.append('file', file)
+        const response = await fetch(`/api/v1/conversations/${conversation.id}/files`, {
+          method: 'POST',
+          body,
+        })
+        if (!response.ok) {
+          throw new Error(await apiError(response, `文件 ${file.name} 上传失败`))
+        }
+      }
+      await loadFiles(conversation.id)
+    } catch (requestError: unknown) {
+      setError(messageOf(requestError))
+    } finally {
+      setUploadingFiles(false)
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
@@ -396,6 +534,9 @@ export function App() {
       `conversationId: ${conversation.id}`,
       `title: ${conversation.title}`,
       `activeJobId: ${conversation.activeJobId ?? 'null'}`,
+      '',
+      `files: ${files.length}`,
+      ...files.map((file) => `- ${file.fileName} (${file.id}, ${file.contentType}, ${file.sizeBytes} bytes)`),
       '',
       ...conversation.messages.map((message, index) => [
         `## Message ${index + 1}`,
@@ -444,30 +585,38 @@ export function App() {
     ].join('\n')
   }
 
-  async function saveDeepSeekConfig() {
-    if (!deepSeekConfig) return
+  async function saveSelectedProviderConfig() {
+    if (!selectedSettingsModel || !selectedProviderConfig || !selectedProviderDraft) return
     setProviderBusy(true)
     setProviderTest(null)
     setError(null)
     try {
-      const response = await fetch('/api/v1/settings/providers/deepseek', {
+      const response = await fetch(`/api/v1/settings/providers/${selectedSettingsModel.providerId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          baseUrl: deepSeekBaseUrl,
-          modelName: deepSeekModel,
-          apiKey: deepSeekApiKey || null,
+          baseUrl: selectedProviderDraft.baseUrl,
+          modelName: selectedSettingsModel.providerModel,
+          apiKey: selectedProviderDraft.apiKey || null,
           persistSecret: false,
           enabled: true,
-          expectedVersion: deepSeekConfig.version,
+          expectedVersion: selectedProviderConfig.version,
         }),
       })
       if (!response.ok) {
         throw new Error(await apiError(response, 'Provider 配置保存失败'))
       }
       const updated = (await response.json()) as ProviderConfigView
-      setDeepSeekConfig(updated)
-      setDeepSeekApiKey('')
+      setProviderConfigs((current) => current.map((provider) => (
+        provider.id === updated.id ? updated : provider
+      )))
+      setProviderDrafts((current) => ({
+        ...current,
+        [updated.id]: {
+          baseUrl: updated.baseUrl,
+          apiKey: '',
+        },
+      }))
     } catch (requestError: unknown) {
       setError(messageOf(requestError))
     } finally {
@@ -475,21 +624,31 @@ export function App() {
     }
   }
 
-  async function testDeepSeek() {
+  async function testSelectedProvider() {
+    if (!selectedSettingsModel || !selectedProviderDraft) return
     setProviderBusy(true)
     setProviderTest(null)
     setError(null)
     try {
-      const response = await fetch('/api/v1/settings/providers/deepseek/test', {
+      const response = await fetch(`/api/v1/settings/providers/${selectedSettingsModel.providerId}/test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: deepSeekApiKey || null }),
+        body: JSON.stringify({
+          apiKey: selectedProviderDraft.apiKey || null,
+          modelId: selectedSettingsModel.id,
+        }),
       })
       if (!response.ok) {
-        throw new Error(await apiError(response, 'DeepSeek 连接测试失败'))
+        throw new Error(await apiError(response, `${selectedSettingsModel.displayName} 连接测试失败`))
       }
       setProviderTest((await response.json()) as ProviderTestResult)
-      setDeepSeekApiKey('')
+      setProviderDrafts((current) => ({
+        ...current,
+        [selectedSettingsModel.providerId]: {
+          baseUrl: current[selectedSettingsModel.providerId]?.baseUrl ?? selectedProviderDraft.baseUrl,
+          apiKey: '',
+        },
+      }))
     } catch (requestError: unknown) {
       setError(messageOf(requestError))
     } finally {
@@ -555,7 +714,7 @@ export function App() {
         >
           <span>⚙</span>
           模型设置
-          <small>{deepSeekConfig?.configured ? '已配置' : '待配置'}</small>
+          <small>{executorConfigured ? '已配置' : '待配置'}</small>
         </button>
       </aside>
 
@@ -573,8 +732,15 @@ export function App() {
             <span>EXECUTOR</span>
             <select value={providerMode} onChange={(event) => setProviderMode(event.target.value)}>
               <option value="auto">Auto</option>
-              <option value="fake">Fake</option>
-              <option value="deepseek" disabled={!deepSeekConfig?.configured}>DeepSeek</option>
+              {modelCatalog?.models.map((model) => {
+                const configured = model.providerId === 'fake'
+                  || providerConfigs.find((provider) => provider.id === model.providerId)?.configured
+                return (
+                  <option key={model.id} value={model.id} disabled={!configured && model.providerId !== 'fake'}>
+                    {model.displayName}{configured ? '' : '（待配置）'}
+                  </option>
+                )
+              })}
             </select>
           </label>
           <button
@@ -645,7 +811,47 @@ export function App() {
         <div className="composer-wrap">
           {error ? <div className="error-banner">{error}</div> : null}
           {copyNotice ? <div className="copy-toast">{copyNotice}</div> : null}
+          {files.length ? (
+            <div className="attachment-strip">
+              <span>当前文件</span>
+              <div>
+                {files.map((file) => (
+                  <button
+                    className="attachment-chip"
+                    type="button"
+                    key={file.id}
+                    title={`${file.fileName} · ${file.contentType} · ${file.sizeBytes} bytes`}
+                    onClick={() => setDraft((value) => (
+                      value.trim()
+                        ? value
+                        : `请根据我上传的文件「${file.fileName}」回答。`
+                    ))}
+                  >
+                    <span>📄</span>
+                    {file.fileName}
+                    <small>{formatBytes(file.sizeBytes)}</small>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <form className="chat-composer" onSubmit={sendMessage}>
+            <input
+              ref={fileInputRef}
+              className="file-input"
+              type="file"
+              multiple
+              onChange={(event) => void uploadFiles(event.target.files)}
+            />
+            <button
+              className="attach-button"
+              type="button"
+              disabled={!conversation || uploadingFiles}
+              onClick={() => fileInputRef.current?.click()}
+              title="上传文件"
+            >
+              {uploadingFiles ? '…' : '＋'}
+            </button>
             <textarea
               aria-label="给 Meta Agent 发消息"
               placeholder="描述你想完成的事情…"
@@ -659,7 +865,7 @@ export function App() {
               {sending ? '…' : '↑'}
             </button>
           </form>
-          <p>Enter 发送 · Shift + Enter 换行 · 执行路径不包含模型隐藏思维</p>
+          <p>＋ 上传文件 · Enter 发送 · Shift + Enter 换行 · 执行路径不包含模型隐藏思维</p>
         </div>
       </section>
 
@@ -669,7 +875,9 @@ export function App() {
             <span className="eyebrow">AGENT PATH</span>
             <strong>思考与执行路径</strong>
           </div>
-          <span className="path-count">{path.length}</span>
+          <span className="path-count">
+            {pathMode === 'compact' ? `${displayPath.length}/${path.length}` : path.length}
+          </span>
         </header>
 
         <div className="path-legend">
@@ -679,6 +887,20 @@ export function App() {
           <span><i className="evidence-color" />Evidence</span>
           {path.length ? (
             <div className="path-actions">
+              <button
+                className={pathMode === 'compact' ? 'active' : ''}
+                type="button"
+                onClick={() => setPathMode('compact')}
+              >
+                简洁
+              </button>
+              <button
+                className={pathMode === 'debug' ? 'active' : ''}
+                type="button"
+                onClick={() => setPathMode('debug')}
+              >
+                调试
+              </button>
               <button type="button" onClick={() => setCollapsedPathNodes(new Set())}>
                 全部展开
               </button>
@@ -693,7 +915,7 @@ export function App() {
         </div>
 
         <div className="path-list">
-          {path.length ? (
+          {displayPath.length ? (
             visiblePath.map((node) => {
               const hasChildren = pathChildren.has(node.id)
               const collapsed = collapsedPathNodes.has(node.id)
@@ -746,34 +968,101 @@ export function App() {
           <section className="settings-panel" onMouseDown={(event) => event.stopPropagation()}>
             <header>
               <div>
-                <span className="eyebrow">MODEL PROVIDER</span>
-                <h2>DeepSeek 设置</h2>
+                <span className="eyebrow">EXECUTOR MODEL</span>
+                <h2>模型设置</h2>
               </div>
               <button type="button" onClick={() => setProviderPanelOpen(false)}>×</button>
             </header>
 
             <label>
-              <span>BASE URL</span>
-              <input value={deepSeekBaseUrl} onChange={(event) => setDeepSeekBaseUrl(event.target.value)} />
-            </label>
-            <label>
-              <span>MODEL</span>
-              <input value={deepSeekModel} onChange={(event) => setDeepSeekModel(event.target.value)} />
-            </label>
-            <label>
-              <span>API KEY</span>
-              <input
-                type="password"
-                autoComplete="new-password"
-                placeholder={deepSeekConfig?.configured ? '•••••••• 已配置，留空保持不变' : 'sk-…'}
-                value={deepSeekApiKey}
-                onChange={(event) => setDeepSeekApiKey(event.target.value)}
-              />
+              <span>选择执行模型</span>
+              <select
+                value={settingsModelId}
+                onChange={(event) => {
+                  setSettingsModelId(event.target.value)
+                  setProviderMode(event.target.value)
+                  setProviderTest(null)
+                }}
+              >
+                {modelCatalog?.models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.displayName} · {model.providerId}
+                  </option>
+                ))}
+              </select>
             </label>
 
+            {selectedSettingsModel ? (
+              <div className="model-capability-card">
+                <strong>{selectedSettingsModel.displayName}</strong>
+                <span>{selectedSettingsModel.providerModel}</span>
+                <p>
+                  上下文 {formatContextWindow(selectedSettingsModel.contextWindow)}
+                  {' · '}
+                  {selectedSettingsModel.modalities.join(' / ')}
+                </p>
+                <div>
+                  <i className={selectedSettingsModel.capabilities.toolCalling ? 'on' : ''}>Tool</i>
+                  <i className={selectedSettingsModel.capabilities.reasoning ? 'on' : ''}>Reasoning</i>
+                  <i className={selectedSettingsModel.capabilities.thinkingMode ? 'on' : ''}>Thinking</i>
+                  <i className={selectedSettingsModel.capabilities.vision ? 'on' : ''}>Vision</i>
+                </div>
+              </div>
+            ) : null}
+
+            {selectedSettingsModel?.providerId === 'fake' ? (
+              <div className="secret-note">
+                Fake 模型不需要 API Key，适合离线链路验证。
+              </div>
+            ) : (
+              <>
+                <label>
+                  <span>Provider</span>
+                  <input value={selectedProviderConfig?.displayName ?? selectedSettingsModel?.providerId ?? ''} disabled />
+                </label>
+                <label>
+                  <span>BASE URL</span>
+                  <input
+                    value={selectedProviderDraft?.baseUrl ?? ''}
+                    onChange={(event) => {
+                      if (!selectedSettingsModel) return
+                      const providerId = selectedSettingsModel.providerId
+                      setProviderDrafts((current) => ({
+                        ...current,
+                        [providerId]: {
+                          baseUrl: event.target.value,
+                          apiKey: current[providerId]?.apiKey ?? '',
+                        },
+                      }))
+                    }}
+                  />
+                </label>
+                <label>
+                  <span>API KEY</span>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    placeholder={selectedProviderConfig?.configured ? '•••••••• 已配置，留空保持不变' : 'API Key'}
+                    value={selectedProviderDraft?.apiKey ?? ''}
+                    onChange={(event) => {
+                      if (!selectedSettingsModel) return
+                      const providerId = selectedSettingsModel.providerId
+                      setProviderDrafts((current) => ({
+                        ...current,
+                        [providerId]: {
+                          baseUrl: current[providerId]?.baseUrl ?? selectedProviderConfig?.baseUrl ?? '',
+                          apiKey: event.target.value,
+                        },
+                      }))
+                    }}
+                  />
+                </label>
+              </>
+            )}
+
             <div className="secret-note">
-              Key 不会回传浏览器，也不会写入代码、事件、日志或 Checkpoint。
-              页面提交的 Key 当前只保存在后端进程内存。
+              先选择 executor 模型，再配置该模型所属 Provider 的 API Key。
+              Key 不会回传浏览器，也不会写入代码、事件、日志或 Checkpoint；页面提交的 Key 当前只保存在后端进程内存。
             </div>
 
             {providerTest ? (
@@ -783,8 +1072,19 @@ export function App() {
             ) : null}
 
             <div className="settings-actions">
-              <button type="button" disabled={providerBusy} onClick={testDeepSeek}>测试连接</button>
-              <button className="primary" type="button" disabled={providerBusy} onClick={saveDeepSeekConfig}>
+              <button
+                type="button"
+                disabled={providerBusy || !selectedSettingsModel || selectedSettingsModel.providerId === 'fake'}
+                onClick={testSelectedProvider}
+              >
+                测试连接
+              </button>
+              <button
+                className="primary"
+                type="button"
+                disabled={providerBusy || !selectedSettingsModel || selectedSettingsModel.providerId === 'fake'}
+                onClick={saveSelectedProviderConfig}
+              >
                 保存到内存
               </button>
             </div>
@@ -815,4 +1115,25 @@ function formatTime(value: string) {
     minute: '2-digit',
     second: '2-digit',
   }).format(new Date(value))
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / 1024 / 1024).toFixed(1)} MB`
+}
+
+function formatContextWindow(value: number) {
+  if (!value) return '未知'
+  if (value >= 1000) return `${Math.round(value / 1000)}K`
+  return String(value)
+}
+
+function isCompactPathNode(node: AgentPathNode) {
+  return ![
+    'LOOP_PHASE',
+    'MODEL_CALL',
+    'CHECKPOINT',
+    'RECOVERY_ATTEMPT',
+  ].includes(node.nodeType)
 }

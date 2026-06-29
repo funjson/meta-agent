@@ -7,6 +7,7 @@ import java.util.UUID;
 import com.funjson.metaagent.job.api.JobView;
 import com.funjson.metaagent.task.api.TaskView;
 import com.funjson.metaagent.job.domain.JobCreationContext;
+import com.funjson.metaagent.job.domain.JobReplayCandidate;
 import com.funjson.metaagent.job.domain.JobStatus;
 import com.funjson.metaagent.task.domain.TaskStatus;
 
@@ -73,6 +74,9 @@ public interface JobStore {
 
     /** @return Job 分页数据 */
     List<JobView> findAll(int limit, int offset);
+
+    /** @return 已提交但尚未物化 TaskRun 的可重放 Job */
+    List<JobReplayCandidate> findStartableJobsForReplay(int limit);
 
     /** @return Job 总数 */
     long countAll();

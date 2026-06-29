@@ -52,6 +52,25 @@ public class LoopEvaluator implements LoopCompletionPolicy {
                     "已收到用户澄清回答，但 LoopTree 深度或节点预算已耗尽",
                     "Loop execution policy exhausted after clarification");
         }
+        if (isIntermediateToolObservation(actionResult.actionType())) {
+            if (canAdjust) {
+                // Tool/RAG/File/Skill 的结果是 Observation，下一轮模型需要基于它生成最终用户产物。
+                return new LoopEvaluation(
+                        LoopEvaluationDecision.ADJUST,
+                        "工具动作已完成，需要基于 Observation 继续生成用户结果",
+                        "上一轮工具动作 "
+                                + actionResult.actionType().name()
+                                + " 返回："
+                                + summarize(content, 12_000)
+                                + "。请结合 Conversation Context、工具 Observation "
+                                + "和原始目标，优先选择 MODEL_CALL 合成面向用户的最终结果；"
+                                + "不要重复调用同类工具，除非需要查询一个明确不同的信息缺口。");
+            }
+            return new LoopEvaluation(
+                    LoopEvaluationDecision.FAIL,
+                    "工具动作已完成，但 LoopTree 深度或节点预算已耗尽",
+                    "Loop execution policy exhausted after tool observation");
+        }
         if (isUserFacingCompletion(content)) {
             return new LoopEvaluation(
                     LoopEvaluationDecision.COMPLETE,
@@ -81,7 +100,30 @@ public class LoopEvaluator implements LoopCompletionPolicy {
         if (clarificationNeedDetector.requiresClarification(content)) {
             return false;
         }
+        if (promisesAnotherToolCall(content)) {
+            return false;
+        }
         return !content.matches("(?s).*(LoopNode|TaskRun|Control Kernel|Checkpoint|Observation|上下文构建|当前节点).*");
+    }
+
+    /**
+     * 判断模型是否把“后续继续查/继续搜索”当成了最终回复。
+     */
+    private boolean promisesAnotherToolCall(String content) {
+        return content != null
+                && content.matches("(?s).*(让我|我来|我会|我将|接下来).{0,12}(重新|再次|再|继续).{0,12}(搜索|查找|查询|检索).*");
+    }
+
+    /**
+     * Tool 类动作默认不是用户最终产物，而是 ReAct 的 Observation。
+     */
+    private boolean isIntermediateToolObservation(
+            LoopActionType actionType) {
+        return actionType == LoopActionType.TOOL_CALL
+                || actionType == LoopActionType.RAG_QUERY
+                || actionType == LoopActionType.WEB_SEARCH
+                || actionType == LoopActionType.FILE_SEARCH
+                || actionType == LoopActionType.SKILL_LOAD;
     }
 
     /**
@@ -94,6 +136,10 @@ public class LoopEvaluator implements LoopCompletionPolicy {
         if (clarificationNeedDetector.requiresClarification(content)) {
             return "上一次动作是在请求用户补充信息；请改用 clarification.request 动作。";
         }
+        if (promisesAnotherToolCall(content)) {
+            return "上一次回答承诺继续搜索或查询，但当前应基于已有工具 Observation 直接合成结果；"
+                    + "请说明已有信息的局限，并给出当前能可靠回答的内容，不要承诺后续工具调用。";
+        }
         return "上一次动作泄露了内部执行术语；请改写成面向用户的自然回复。";
     }
 
@@ -104,14 +150,26 @@ public class LoopEvaluator implements LoopCompletionPolicy {
      * @return 截断后的摘要
      */
     private String summarize(String content) {
+        return summarize(content, 180);
+    }
+
+    /**
+     * 生成指定长度的单行摘要。
+     *
+     * @param content 原始动作内容
+     * @param maxLength 最大长度
+     * @return 截断后的摘要
+     */
+    private String summarize(String content, int maxLength) {
         String normalized = content == null
                 ? ""
                 : content.replaceAll("\\s+", " ").trim();
         if (normalized.isBlank()) {
             return "用户已回答，但内容为空";
         }
-        return normalized.length() <= 180
+        return normalized.length() <= maxLength
                 ? normalized
-                : normalized.substring(0, 177) + "...";
+                : normalized.substring(0, Math.max(0, maxLength - 3))
+                        + "...";
     }
 }

@@ -22,6 +22,8 @@ public enum ContextBlockType {
     CAPABILITY,
     /** 当前可用工具目录。 */
     TOOL_CATALOG,
+    /** 当前 Conversation 可用的文件附件。 */
+    FILE,
     /** 权限、预算、验收和递归边界。 */
     CONSTRAINT
 }

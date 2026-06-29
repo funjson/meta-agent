@@ -13,12 +13,14 @@ import com.funjson.metaagent.clarification.domain.ClarificationRequest;
  *
  * @param conversation Conversation 元信息
  * @param visibleMessages 可进入用户上下文的消息
+ * @param conversationFacts Conversation 级结构化事实
  * @param openClarifications 当前打开的澄清候选
  * @param resolvedClarifications 最近已经解决的澄清事实
  */
 public record ContextEnvelope(
         ContextConversation conversation,
         List<ContextMessage> visibleMessages,
+        List<ContextFact> conversationFacts,
         List<ClarificationRequest> openClarifications,
         List<ClarificationRequest> resolvedClarifications) {
 
@@ -27,6 +29,9 @@ public record ContextEnvelope(
         visibleMessages = visibleMessages == null
                 ? List.of()
                 : List.copyOf(visibleMessages);
+        conversationFacts = conversationFacts == null
+                ? List.of()
+                : List.copyOf(conversationFacts);
         openClarifications = openClarifications == null
                 ? List.of()
                 : List.copyOf(openClarifications);

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.file.infrastructure.persistence.mybatis.ConversationFilePersistenceMapper">
+
+    <sql id="fileColumns">
+        BIN_TO_UUID(id) AS id,
+        BIN_TO_UUID(conversation_id) AS conversationId,
+        file_name AS fileName,
+        storage_path AS storagePath,
+        content_type AS contentType,
+        size_bytes AS sizeBytes,
+        checksum_sha256 AS checksumSha256,
+        status,
+        created_at AS createdAt
+    </sql>
+
+    <insert id="insert">
+        INSERT INTO conversation_file (
+            id, conversation_id, file_name, storage_path, content_type,
+            size_bytes, checksum_sha256, status
+        ) VALUES (
+            #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{fileName},
+            #{storagePath},
+            #{contentType},
+            #{sizeBytes},
+            #{checksumSha256},
+            #{status}
+        )
+    </insert>
+
+    <select id="findByConversation" resultType="map">
+        SELECT <include refid="fileColumns"/>
+        FROM conversation_file
+        WHERE conversation_id =
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'ACTIVE'
+        ORDER BY created_at DESC, file_name
+    </select>
+
+    <select id="findById" resultType="map">
+        SELECT <include refid="fileColumns"/>
+        FROM conversation_file
+        WHERE conversation_id =
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND id =
+            #{fileId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND status = 'ACTIVE'
+    </select>
+
+    <select id="findLatestByName" resultType="map">
+        SELECT <include refid="fileColumns"/>
+        FROM conversation_file
+        WHERE conversation_id =
+            #{conversationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+          AND file_name = #{fileName}
+          AND status = 'ACTIVE'
+        ORDER BY created_at DESC
+        LIMIT 1
+    </select>
+</mapper>

@@ -150,6 +150,30 @@
         LIMIT #{limit} OFFSET #{offset}
     </select>
 
+    <select id="findStartableJobsForReplay" resultType="map">
+        SELECT
+            BIN_TO_UUID(job.id) AS jobId,
+            BIN_TO_UUID(job.conversation_id) AS conversationId,
+            BIN_TO_UUID(job.source_message_id) AS sourceMessageId,
+            job.version AS version
+        FROM job
+        WHERE job.status = 'CREATED'
+          AND EXISTS (
+              SELECT 1
+              FROM task
+              WHERE task.job_id = job.id
+                AND task.status = 'READY'
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM task
+              JOIN task_run run ON run.task_id = task.id
+              WHERE task.job_id = job.id
+          )
+        ORDER BY job.created_at
+        LIMIT #{limit}
+    </select>
+
     <select id="countAllJobs" resultType="long">
         SELECT COUNT(*) FROM job WHERE parent_job_id IS NULL
     </select>

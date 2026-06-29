@@ -182,7 +182,9 @@ public class RuntimeTransactionService {
             RunExecutionContext context,
             ExternalActionHandle handle,
             ModelResponse response) {
-        String summary = response.content() == null || response.content().isBlank()
+        String summary = response.hasToolCalls()
+                ? "模型调用完成并返回原生工具调用"
+                : response.content() == null || response.content().isBlank()
                 ? "模型调用完成，但返回内容为空"
                 : "模型调用完成并返回可观察结果";
         runtimeRepository.completePhase(
@@ -192,6 +194,10 @@ public class RuntimeTransactionService {
                         "provider", response.provider(),
                         "model", response.model(),
                         "finishReason", response.finishReason(),
+                        "toolCallCount", response.toolCalls().size(),
+                        "reasoningPresent",
+                        response.reasoningContent() != null
+                                && !response.reasoningContent().isBlank(),
                         "contentPresent",
                         response.content() != null && !response.content().isBlank())));
         insertPhaseEvent(

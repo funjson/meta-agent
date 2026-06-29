@@ -2,6 +2,8 @@ package com.funjson.metaagent.web.api.provider;
 
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import com.funjson.metaagent.prompt.application.PromptRegistry;
 import com.funjson.metaagent.prompt.domain.PromptUseCase;
@@ -13,6 +15,7 @@ import com.funjson.metaagent.provider.application.ProviderConfigService;
 import com.funjson.metaagent.provider.application.port.out.ProviderConnectionTestPort;
 import com.funjson.metaagent.provider.domain.ModelRequest;
 import com.funjson.metaagent.provider.domain.ModelResponse;
+import com.funjson.metaagent.provider.domain.ModelThinkingMode;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -30,22 +33,25 @@ import org.springframework.web.bind.annotation.RestController;
 public class ProviderSettingsController {
 
     private final ProviderConfigService configService;
-    private final ProviderConnectionTestPort connectionTestPort;
+    private final Map<String, ProviderConnectionTestPort> connectionTestPorts;
     private final PromptRegistry promptRegistry;
 
     /**
      * 创建 Provider 设置 Controller。
      *
      * @param configService 配置服务
-     * @param connectionTestPort Provider Connection Test Port
+     * @param connectionTestPorts Provider Connection Test Ports
      * @param promptRegistry Prompt Registry
      */
     public ProviderSettingsController(
             ProviderConfigService configService,
-            ProviderConnectionTestPort connectionTestPort,
+            List<ProviderConnectionTestPort> connectionTestPorts,
             PromptRegistry promptRegistry) {
         this.configService = configService;
-        this.connectionTestPort = connectionTestPort;
+        this.connectionTestPorts = connectionTestPorts.stream()
+                .collect(Collectors.toUnmodifiableMap(
+                        ProviderConnectionTestPort::providerId,
+                        Function.identity()));
         this.promptRegistry = promptRegistry;
     }
 
@@ -84,8 +90,11 @@ public class ProviderSettingsController {
     public ProviderTestResult test(
             @PathVariable String providerId,
             @Valid @RequestBody TestProviderRequest request) {
-        if (!"deepseek".equals(providerId)) {
-            throw new IllegalArgumentException("Unsupported provider test: " + providerId);
+        ProviderConnectionTestPort connectionTestPort =
+                connectionTestPorts.get(providerId);
+        if (connectionTestPort == null) {
+            throw new IllegalArgumentException(
+                    "Unsupported provider test: " + providerId);
         }
         long started = System.nanoTime();
         var prompt = promptRegistry.render(
@@ -96,7 +105,10 @@ public class ProviderSettingsController {
                 null,
                 "Provider connection test",
                 prompt,
-                32), request.apiKey());
+                32,
+                java.util.List.of(),
+                ModelThinkingMode.DISABLED,
+                request.modelId()), request.apiKey());
         return new ProviderTestResult(
                 true,
                 response.provider(),

@@ -509,7 +509,7 @@ button {
 
 .chat-composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
+  grid-template-columns: 36px minmax(0, 1fr) 38px;
   gap: 10px;
   align-items: end;
   padding: 12px 12px 12px 16px;
@@ -522,6 +522,10 @@ button {
 .chat-composer:focus-within {
   border-color: #66735d;
   box-shadow: 0 0 0 3px rgba(168, 213, 162, 0.05);
+}
+
+.file-input {
+  display: none;
 }
 
 .chat-composer textarea {
@@ -552,9 +556,49 @@ button {
   font-weight: 800;
 }
 
+.chat-composer .attach-button {
+  color: #c7cec0;
+  background: #252821;
+  border: 1px solid #3a3d34;
+}
+
 .chat-composer button:disabled {
   cursor: not-allowed;
   opacity: 0.3;
+}
+
+.attachment-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  color: #7b8077;
+  font-size: 0.66rem;
+}
+
+.attachment-strip > div {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  overflow-x: auto;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 230px;
+  padding: 6px 8px;
+  border: 1px solid rgba(168, 213, 162, 0.16);
+  border-radius: 999px;
+  color: #d5dccf;
+  background: rgba(38, 43, 34, 0.72);
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.attachment-chip small {
+  color: #8c9587;
 }
 
 .composer-wrap > p {
@@ -665,6 +709,12 @@ button {
 .path-actions button:hover {
   border-color: #505648;
   color: #cbd0c5;
+}
+
+.path-actions button.active {
+  border-color: #7f8f68;
+  color: #e0e6d7;
+  background: #23271b;
 }
 
 .control-color { background: #8da8d8; }
@@ -942,7 +992,8 @@ button {
   letter-spacing: 0.1em;
 }
 
-.settings-panel input {
+.settings-panel input,
+.settings-panel select {
   padding: 11px 12px;
   border: 1px solid #36392f;
   border-radius: 8px;
@@ -979,8 +1030,57 @@ button {
   }
 }
 
-.settings-panel input:focus {
+.settings-panel input:focus,
+.settings-panel select:focus {
   border-color: #75826b;
+}
+
+.settings-panel input:disabled {
+  color: #878b82;
+  background: #151713;
+}
+
+.model-capability-card {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid #31362d;
+  border-radius: 10px;
+  background: #151713;
+}
+
+.model-capability-card strong {
+  color: #daddd3;
+  font-size: 0.9rem;
+}
+
+.model-capability-card span,
+.model-capability-card p {
+  margin: 0;
+  color: #7c8177;
+  font-size: 0.68rem;
+}
+
+.model-capability-card div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.model-capability-card i {
+  padding: 4px 7px;
+  border: 1px solid #353831;
+  border-radius: 999px;
+  color: #656b61;
+  font-style: normal;
+  font-size: 0.6rem;
+}
+
+.model-capability-card i.on {
+  border-color: #64785d;
+  color: #a8d5a2;
+  background: rgba(168, 213, 162, 0.08);
 }
 
 .secret-note {

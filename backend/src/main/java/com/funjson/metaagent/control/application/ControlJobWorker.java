@@ -8,9 +8,11 @@ import com.funjson.metaagent.clarification.application.ClarificationService;
 import com.funjson.metaagent.conversation.application.AssistantMessageService;
 import com.funjson.metaagent.conversation.application.UserFacingResponseRenderer;
 import com.funjson.metaagent.job.application.JobExecutionCoordinator;
+import com.funjson.metaagent.job.application.JobReplayService;
 import com.funjson.metaagent.recovery.application.TaskRunResumeExecutor;
 import com.funjson.metaagent.task.domain.TaskRunStatus;
 import jakarta.annotation.PreDestroy;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 /**
@@ -23,6 +25,7 @@ import org.springframework.stereotype.Service;
 public class ControlJobWorker {
 
     private final JobExecutionCoordinator executionCoordinator;
+    private final JobReplayService jobReplayService;
     private final TaskRunResumeExecutor resumeExecutor;
     private final AssistantMessageService assistantMessageService;
     private final ClarificationService clarificationService;
@@ -34,6 +37,7 @@ public class ControlJobWorker {
      * 创建 Control Job Worker。
      *
      * @param executionCoordinator Job 执行协调器
+     * @param jobReplayService Job 重放查询服务
      * @param resumeExecutor TaskRun 恢复执行器
      * @param assistantMessageService Assistant 消息服务
      * @param clarificationService Clarification Service
@@ -41,11 +45,13 @@ public class ControlJobWorker {
      */
     public ControlJobWorker(
             JobExecutionCoordinator executionCoordinator,
+            JobReplayService jobReplayService,
             TaskRunResumeExecutor resumeExecutor,
             AssistantMessageService assistantMessageService,
             ClarificationService clarificationService,
             UserFacingResponseRenderer responseRenderer) {
         this.executionCoordinator = executionCoordinator;
+        this.jobReplayService = jobReplayService;
         this.resumeExecutor = resumeExecutor;
         this.assistantMessageService = assistantMessageService;
         this.clarificationService = clarificationService;
@@ -68,6 +74,22 @@ public class ControlJobWorker {
      */
     public void submitResume(TaskRunResumeCommand command) {
         executor.submit(() -> runResume(command));
+    }
+
+    /**
+     * Replays Jobs that were created durably but never submitted to a worker.
+     */
+    @Scheduled(fixedDelayString = "${meta-agent.worker.job-replay-delay-ms:30000}")
+    public void replayStartableJobs() {
+        for (var candidate : jobReplayService.findStartableJobs(8)) {
+            submit(new JobStartCommand(
+                    candidate.conversationId(),
+                    candidate.sourceMessageId(),
+                    candidate.jobId(),
+                    candidate.version(),
+                    "job-replay:" + candidate.jobId()
+                            + ":" + candidate.version()));
+        }
     }
 
     /**

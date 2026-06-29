@@ -21,6 +21,9 @@ classDiagram
   PendingInteractionRouter --> ModelPendingInteractionRouterPort
   PendingInteractionRouter ..> PendingInteractionMatcher
   PendingInteractionCompletionPolicy ..> PendingInteractionFacts
+  TurnRouter --> PendingInteractionRouter
+  TurnRouter --> IntentRecognitionService
+  TurnRouter --> TurnRoutingPlan
   ModelPendingInteractionRouter ..|> ModelPendingInteractionRouterPort
 ```
 
@@ -61,12 +64,19 @@ Control 只记录部分事实并保持 Clarification 打开，禁止启动 Loop 
 如果多个等待项属于同类任务，Router 必须先检查 Conversation 中已抽取的结构化事实；
 已满足合同的等待项不应重复追问，而应直接恢复或复用已知事实。
 
+`TurnRouter` 是当前混合意图入口。它不会替代 `PendingInteractionRouter` 或
+`IntentRecognitionService`，而是把二者编排成 `TurnRoutingPlan`：先判断是否命中等待交互，
+再在保守标记出现时追加新意图动作。后续更复杂的混合意图会继续扩展 Plan，而不是让 Intent
+直接操作 Job。
+
 ## 类与功能关系
 
 - `IntentRecognitionService`：固定优先级管线。
 - `ModelIntentClassifier`：版本化 Prompt 与模型适配。
 - `IntentRecognition`：不可变输出合同。
 - `IntentType.CHAT_QA`：寒暄或简单问答入口，由 Loop 负责最终响应。
+- `TurnRouter`：把等待交互路由和普通意图识别收束为一份可执行的 `TurnRoutingPlan`。
+- `TurnRoutingPlan` / `TurnAction`：Control 层消费的稳定动作合同，Intent 层不创建 Job。
 - `PendingInteractionRouter`：正式等待交互入口，负责模型结构化路由、合同校验和降级匹配。
 - `ModelPendingInteractionRouter`：使用版本化 Prompt 输出结构化 JSON，只返回系统合同，不直接生成聊天消息。
 - `PendingInteractionMatcher`：保守降级策略，不默认绑定最近等待项。

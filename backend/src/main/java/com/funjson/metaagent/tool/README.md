@@ -34,11 +34,11 @@ classDiagram
 
 ```text
 LoopContextBuilder 注入 ToolCatalog
-  → LoopPlan 选择 TOOL_CALL / SKILL_LOAD / CLARIFICATION_REQUEST
+  → Provider native tool_call 或 fallback ReActActionPlanner 选择 Tool
   → ToolExecutionService 创建 ToolInvocation
   → framework tool 或脚本 tool 执行
   → result_json / error_message 持久化
-  → Agent Path 展示 TOOL_CALL
+  → Loop Observation / Agent Path 展示对应动作
 ```
 
 `clarification.request` 是特殊 Tool：它创建 `ClarificationRequest` 并把 `ToolInvocation` 关联到该请求；真正的 `WAITING_HUMAN` 状态迁移由 Loop Kernel 在同一条执行链路里完成。该 Tool 支持 `contractJson` 字符串或 `contract` 对象参数，必须把结构化澄清合同持久化到 `clarification_request.contract_json`。
@@ -46,7 +46,12 @@ LoopContextBuilder 注入 ToolCatalog
 ## 类与功能关系
 
 - `ToolCatalogService`：合并 framework tool 和 SkillPackage 中的脚本 Tool。
+- `ToolCatalogService.modelToolSpecs()`：把内部 `web.search` 等 Tool ID 转成 Provider 安全函数名，例如 `web_search`，供原生 function calling 使用。
 - `ToolExecutionService`：执行 framework tool、受控脚本 Tool，并维护 ToolInvocation 审计。
+- `skill.search`：返回当前可见脚本 Tool / Skill executable 摘要，不改变运行状态。
+- `skill.load`：把指定 CapabilityRef 应用到当前 LoopNode，并写入 CapabilityLoad 审计。
+- `file.list/read/search/write`：第一批框架内置文件工具，只访问当前 Conversation 受控文件空间。
+- `web.search`：第一批网络工具，返回标题、URL、摘要和可选发布时间，作为 Observation 进入下一轮。
 - `ToolStore`：隔离 MyBatis 持久化细节。
 - `ScriptToolSpec`：脚本解释器、参数 schema、副作用等级和脚本文本的不可变快照。
 

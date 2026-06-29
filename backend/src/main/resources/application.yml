@@ -38,3 +38,7 @@ meta-agent:
       base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
       model: ${DEEPSEEK_MODEL:deepseek-v4-flash}
       api-key: ${DEEP_SEEK_API_KEY:${DEEPSEEK_API_KEY:}}
+    glm:
+      base-url: ${GLM_BASE_URL:https://open.bigmodel.cn/api/paas/v4}
+      model: ${GLM_MODEL:glm-4.5}
+      api-key: ${GLM_API_KEY:${ZHIPU_API_KEY:}}

@@ -22,4 +22,34 @@ public interface ModelProvider {
      * @return 模型响应
      */
     ModelResponse generate(ModelRequest request);
+
+    /**
+     * @return 当前 Provider 是否支持原生 function/tool calling
+     */
+    default boolean supportsNativeToolCalling() {
+        return false;
+    }
+
+    /**
+     * @param modelId 框架模型 ID
+     * @return 指定模型是否支持原生 function/tool calling
+     */
+    default boolean supportsNativeToolCalling(String modelId) {
+        return supportsNativeToolCalling();
+    }
+
+    /**
+     * @return 当前 Provider 是否支持推理/思考内容返回或 thinking 配置
+     */
+    default boolean supportsThinkingMode() {
+        return false;
+    }
+
+    /**
+     * @param modelId 框架模型 ID
+     * @return 指定模型是否支持推理/思考能力
+     */
+    default boolean supportsThinkingMode(String modelId) {
+        return supportsThinkingMode();
+    }
 }

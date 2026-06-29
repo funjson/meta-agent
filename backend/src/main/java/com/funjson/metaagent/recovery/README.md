@@ -31,6 +31,15 @@ RecoveryWorker 定时扫描可恢复 TaskRun
   → 恢复原 LoopNode 或 ChildJobOutcome
 ```
 
+另有 Job 启动 replay 缺口由 Control/Job 边界处理：
+
+```text
+Control 事务已提交
+  → 进程在 Worker 入队前崩溃
+  → ControlJobWorker 定时调用 JobReplayService
+  → CREATED + READY + 无 TaskRun 的 Job 被重新提交
+```
+
 ## 扩展点与测试入口
 
 支持 RUN_START、ACTION_PREPARED、CHILD_LOOP_CREATED 和 CHILD_JOB_CREATED；
