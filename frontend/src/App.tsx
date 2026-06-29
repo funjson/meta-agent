@@ -1,4 +1,18 @@
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import {
+  Cursor as IslandCursor,
+  Icon as IslandIcon,
+  Loading as IslandLoading,
+  Title as IslandTitle,
+} from 'animal-island-ui'
+import 'animal-island-ui/style'
+import 'animal-island-ui/es/components/Cursor/cursor.css'
+import islandItem022 from 'animal-island-ui/items/item-022.png'
+import islandItem074 from 'animal-island-ui/items/item-074.png'
+import islandItem129 from 'animal-island-ui/items/item-129.png'
 
 type MessageView = {
   id: string
@@ -128,7 +142,41 @@ type ProviderTestResult = {
   message: string
 }
 
+type SystemInfoView = {
+  chatTransport?: {
+    responseMode?: string
+    streamingEnabled?: boolean
+  }
+}
+
+type ThemeName = 'animal-official' | 'animal-meta'
+
+type StreamingAssistant = {
+  id: string | null
+  messageType: string
+  content: string
+}
+
+type CuteSelectOption = {
+  value: string
+  label: string
+  meta?: string
+  icon?: ReactNode
+  disabled?: boolean
+}
+
+type SseFrame = {
+  event: string
+  data: string
+}
+
 const conversationStorageKey = 'meta-agent.active-conversation'
+const themeStorageKey = 'meta-agent.theme'
+
+const themeOptions: CuteSelectOption[] = [
+  { value: 'animal-official', label: 'Animal Official', meta: '官方岛屿资产', icon: '🏝️' },
+  { value: 'animal-meta', label: 'Meta Animal', meta: '我们自己的岛屿皮肤', icon: '🍃' },
+]
 
 export function App() {
   const [conversation, setConversation] = useState<ConversationView | null>(null)
@@ -137,10 +185,22 @@ export function App() {
   const [files, setFiles] = useState<ConversationFileView[]>([])
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
+  const [awaitingAssistant, setAwaitingAssistant] = useState(false)
+  const [pendingAssistantAfter, setPendingAssistantAfter] = useState<number | null>(null)
+  const [streamingAssistant, setStreamingAssistant] = useState<StreamingAssistant | null>(null)
   const [uploadingFiles, setUploadingFiles] = useState(false)
   const [showThinking, setShowThinking] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copyNotice, setCopyNotice] = useState<string | null>(null)
+  const [systemInfo, setSystemInfo] = useState<SystemInfoView | null>(null)
+  const [theme, setTheme] = useState<ThemeName>(() => {
+    const stored = localStorage.getItem(themeStorageKey)
+    if (stored === 'animal-island') return 'animal-meta'
+    return themeOptions.some((option) => option.value === stored) ? stored as ThemeName : 'animal-official'
+  })
+  const [booting, setBooting] = useState(true)
+  const [railHistoryRatio, setRailHistoryRatio] = useState(68)
+  const [inspectorWidth, setInspectorWidth] = useState(390)
   const [providerMode, setProviderMode] = useState('auto')
   const [providerPanelOpen, setProviderPanelOpen] = useState(false)
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogView | null>(null)
@@ -155,6 +215,17 @@ export function App() {
   )
   const messagesRef = useRef<HTMLDivElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  const streamingChatEnabled = systemInfo?.chatTransport?.streamingEnabled ?? true
+  const assistantIsPending = awaitingAssistant || Boolean(streamingAssistant)
+  const composerBusy = sending || assistantIsPending
+  const shellStyle = {
+    '--rail-history-ratio': `${railHistoryRatio}%`,
+    '--inspector-width': `${inspectorWidth}px`,
+    '--island-item-a': `url(${islandItem022})`,
+    '--island-item-b': `url(${islandItem074})`,
+    '--island-item-c': `url(${islandItem129})`,
+  } as CSSProperties & Record<string, string>
 
   const selectedSettingsModel = useMemo(
     () => modelCatalog?.models.find((model) => model.id === settingsModelId)
@@ -181,6 +252,36 @@ export function App() {
 
   const executorConfigured = currentExecutorModel?.providerId === 'fake'
     || providerConfigs.find((provider) => provider.id === currentExecutorModel?.providerId)?.configured
+
+  const executorOptions = useMemo<CuteSelectOption[]>(() => [
+    {
+      value: 'auto',
+      label: 'Auto',
+      meta: '由框架选择可用模型',
+      icon: '🛩️',
+    },
+    ...(modelCatalog?.models.map((model) => {
+      const configured = model.providerId === 'fake'
+        || providerConfigs.find((provider) => provider.id === model.providerId)?.configured
+      return {
+        value: model.id,
+        label: model.displayName,
+        meta: `${model.providerId} · ${formatContextWindow(model.contextWindow)}${configured ? '' : ' · 待配置'}`,
+        icon: modelIcon(model),
+        disabled: !configured && model.providerId !== 'fake',
+      }
+    }) ?? []),
+  ], [modelCatalog, providerConfigs])
+
+  const settingsModelOptions = useMemo<CuteSelectOption[]>(
+    () => modelCatalog?.models.map((model) => ({
+      value: model.id,
+      label: model.displayName,
+      meta: `${model.providerId} · ${model.providerModel}`,
+      icon: modelIcon(model),
+    })) ?? [],
+    [modelCatalog],
+  )
 
   const loadPath = useCallback(async (conversationId: string) => {
     const response = await fetch(`/api/v1/conversations/${conversationId}/agent-path`)
@@ -281,11 +382,21 @@ export function App() {
     return catalog
   }, [])
 
+  const loadSystemInfo = useCallback(async () => {
+    const response = await fetch('/api/v1/system/info')
+    if (!response.ok) {
+      throw new Error(`System info failed (${response.status})`)
+    }
+    const value = (await response.json()) as SystemInfoView
+    setSystemInfo(value)
+    return value
+  }, [])
+
   useEffect(() => {
     async function initialize() {
       setError(null)
       try {
-        const [, catalog] = await Promise.all([loadProviders(), loadModels()])
+        const [, catalog] = await Promise.all([loadProviders(), loadModels(), loadSystemInfo()])
         setProviderMode((value) => value || catalog.defaultModelId)
         const knownConversations = await loadConversations()
         const storedId = localStorage.getItem(conversationStorageKey)
@@ -304,21 +415,37 @@ export function App() {
         await createConversation()
       } catch (requestError: unknown) {
         setError(messageOf(requestError))
+      } finally {
+        setBooting(false)
       }
     }
     initialize()
-  }, [createConversation, loadConversation, loadConversations, loadModels, loadProviders])
+  }, [createConversation, loadConversation, loadConversations, loadModels, loadProviders, loadSystemInfo])
 
   useEffect(() => {
-    if (!conversation?.id || sending) return undefined
+    localStorage.setItem(themeStorageKey, theme)
+  }, [theme])
+
+  useEffect(() => {
+    if (!conversation?.id) return undefined
+    const intervalMs = awaitingAssistant ? 800 : 2500
     const timer = window.setInterval(() => {
-      void loadConversation(conversation.id).catch(() => undefined)
-    }, 2500)
+      void loadConversation(conversation.id)
+        .then((value) => {
+          if (pendingAssistantAfter !== null
+              && hasAssistantAfter(value, pendingAssistantAfter)) {
+            setAwaitingAssistant(false)
+            setPendingAssistantAfter(null)
+            setStreamingAssistant(null)
+          }
+        })
+        .catch(() => undefined)
+    }, intervalMs)
     return () => window.clearInterval(timer)
-  }, [conversation?.id, loadConversation, sending])
+  }, [awaitingAssistant, conversation?.id, loadConversation, pendingAssistantAfter])
 
   useEffect(() => {
-    if (!sending) {
+    if (!assistantIsPending) {
       setShowThinking(false)
       return undefined
     }
@@ -326,7 +453,7 @@ export function App() {
       setShowThinking(true)
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [sending])
+  }, [assistantIsPending])
 
   useEffect(() => {
     const messages = messagesRef.current
@@ -336,7 +463,7 @@ export function App() {
       top: messages.scrollHeight,
       behavior: 'smooth',
     })
-  }, [conversation?.messages.length, showThinking])
+  }, [conversation?.messages.length, showThinking, streamingAssistant?.content])
 
   const displayPath = useMemo(() => (
     pathMode === 'debug'
@@ -412,11 +539,42 @@ export function App() {
     )
   }
 
+  function beginRailResize(event: ReactPointerEvent<HTMLDivElement>) {
+    const container = event.currentTarget.parentElement
+    if (!container) return
+    const rect = container.getBoundingClientRect()
+    const onMove = (moveEvent: PointerEvent) => {
+      const next = ((moveEvent.clientY - rect.top) / rect.height) * 100
+      setRailHistoryRatio(clamp(next, 42, 82))
+    }
+    const stop = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', stop)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', stop)
+  }
+
+  function beginInspectorResize(event: ReactPointerEvent<HTMLDivElement>) {
+    const startX = event.clientX
+    const startWidth = inspectorWidth
+    const onMove = (moveEvent: PointerEvent) => {
+      setInspectorWidth(clamp(startWidth + startX - moveEvent.clientX, 300, 680))
+    }
+    const stop = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', stop)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', stop)
+  }
+
   async function sendMessage(event?: FormEvent) {
     event?.preventDefault()
     const content = draft.trim()
     if (!content || !conversation || sending) return
     const activeConversation = conversation
+    const pendingAfter = activeConversation.messages.length
 
     const optimistic: MessageView = {
       id: `optimistic-${crypto.randomUUID()}`,
@@ -433,9 +591,16 @@ export function App() {
     })
     setDraft('')
     setSending(true)
+    setAwaitingAssistant(true)
+    setPendingAssistantAfter(pendingAfter)
+    setStreamingAssistant(null)
     setError(null)
 
     try {
+      if (streamingChatEnabled) {
+        await sendMessageStream(activeConversation.id, content, pendingAfter)
+        return
+      }
       const response = await fetch(`/api/v1/conversations/${activeConversation.id}/messages`, {
         method: 'POST',
         headers: {
@@ -452,6 +617,10 @@ export function App() {
       }
       const result = (await response.json()) as ChatTurnResult
       setConversation(result.conversation)
+      if (hasAssistantAfter(result.conversation, pendingAfter)) {
+        setAwaitingAssistant(false)
+        setPendingAssistantAfter(null)
+      }
       await Promise.all([
         loadPath(result.conversation.id),
         loadConversations(),
@@ -459,8 +628,135 @@ export function App() {
     } catch (requestError: unknown) {
       setError(messageOf(requestError))
       await loadConversation(activeConversation.id).catch(() => undefined)
+      setAwaitingAssistant(false)
+      setPendingAssistantAfter(null)
+      setStreamingAssistant(null)
     } finally {
       setSending(false)
+    }
+  }
+
+  async function sendMessageStream(
+    conversationId: string,
+    content: string,
+    pendingAfter: number,
+  ) {
+    const response = await fetch(`/api/v1/conversations/${conversationId}/messages/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': crypto.randomUUID(),
+      },
+      body: JSON.stringify({
+        content,
+        providerId: providerMode,
+      }),
+    })
+    if (!response.ok || !response.body) {
+      throw new Error(await apiError(response, 'stream message failed'))
+    }
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (value) {
+        buffer += decoder.decode(value, { stream: !done })
+        buffer = buffer.replace(/\r\n/g, '\n')
+        buffer = await consumeSseBuffer(buffer, conversationId, pendingAfter)
+      }
+      if (done) break
+    }
+    if (buffer.trim()) {
+      await handleSseFrame(parseSseFrame(buffer), conversationId, pendingAfter)
+    }
+  }
+
+  async function consumeSseBuffer(
+    buffer: string,
+    conversationId: string,
+    pendingAfter: number,
+  ) {
+    let rest = buffer
+    while (true) {
+      const splitIndex = rest.indexOf('\n\n')
+      if (splitIndex < 0) return rest
+      const rawFrame = rest.slice(0, splitIndex)
+      rest = rest.slice(splitIndex + 2)
+      await handleSseFrame(parseSseFrame(rawFrame), conversationId, pendingAfter)
+    }
+  }
+
+  async function handleSseFrame(
+    frame: SseFrame,
+    conversationId: string,
+    pendingAfter: number,
+  ) {
+    if (!frame.data) return
+    if (frame.event === 'turn') {
+      const result = JSON.parse(frame.data) as ChatTurnResult
+      const assistantAlreadyStored = hasAssistantAfter(result.conversation, pendingAfter)
+      setConversation(
+        assistantAlreadyStored
+          ? hideAssistantMessagesAfter(result.conversation, pendingAfter)
+          : result.conversation,
+      )
+      if (assistantAlreadyStored) {
+        setAwaitingAssistant(false)
+        setPendingAssistantAfter(null)
+        setStreamingAssistant(null)
+      }
+      await Promise.all([
+        loadPath(result.conversation.id),
+        loadConversations(),
+      ])
+      return
+    }
+    if (frame.event === 'conversation') {
+      setConversation(JSON.parse(frame.data) as ConversationView)
+      return
+    }
+    if (frame.event === 'assistant_start') {
+      const start = JSON.parse(frame.data) as { id: string; messageType: string }
+      setStreamingAssistant({
+        id: start.id,
+        messageType: start.messageType,
+        content: '',
+      })
+      return
+    }
+    if (frame.event === 'assistant_delta') {
+      const delta = JSON.parse(frame.data) as { content: string }
+      setStreamingAssistant((current) => ({
+        id: current?.id ?? null,
+        messageType: current?.messageType ?? 'TASK_RESULT',
+        content: `${current?.content ?? ''}${delta.content ?? ''}`,
+      }))
+      return
+    }
+    if (frame.event === 'assistant_done') {
+      setAwaitingAssistant(false)
+      setPendingAssistantAfter(null)
+      setStreamingAssistant(null)
+      await Promise.all([
+        loadConversation(conversationId),
+        loadConversations(),
+      ])
+      return
+    }
+    if (frame.event === 'done') {
+      const done = JSON.parse(frame.data) as { assistantMessageEmitted: boolean }
+      if (!done.assistantMessageEmitted) {
+        setAwaitingAssistant(false)
+        setPendingAssistantAfter(null)
+        setStreamingAssistant(null)
+      }
+      await loadPath(conversationId).catch(() => undefined)
+      return
+    }
+    if (frame.event === 'error') {
+      const event = JSON.parse(frame.data) as { message?: string }
+      throw new Error(event.message || 'stream failed')
     }
   }
 
@@ -657,21 +953,48 @@ export function App() {
   }
 
   return (
-    <main className="app-shell">
+    <IslandCursor forceAll className="island-cursor-root">
+    <main className="app-shell" data-theme={theme} style={shellStyle}>
+      {booting ? (
+        <div className="island-boot-screen">
+          {theme === 'animal-official' ? (
+            <IslandLoading active />
+          ) : (
+            <div className="meta-island-loader">
+              <span />
+              <span />
+              <span />
+            </div>
+          )}
+          <div className="island-boot-title">
+            {theme === 'animal-official' ? (
+              <IslandTitle size="middle" color="app-green">Meta Agent Island</IslandTitle>
+            ) : (
+              <strong>Meta Agent Island</strong>
+            )}
+            <p>Preparing your agent workbench...</p>
+          </div>
+        </div>
+      ) : null}
       <aside className="rail">
         <div className="brand-mark">
           <span className="brand-orbit" />
           <div>
-            <strong>Meta Agent</strong>
+            {theme === 'animal-official' ? (
+              <IslandTitle size="small" color="app-green">Meta Agent</IslandTitle>
+            ) : (
+              <strong>Meta Agent</strong>
+            )}
             <small>CONTROL + LOOP</small>
           </div>
         </div>
 
         <button className="new-chat" type="button" onClick={startNewConversation}>
-          <span>＋</span>
+          <span>🌱</span>
           新对话
         </button>
 
+        <div className="rail-split">
         <div className="rail-section conversations-section">
           <span className="rail-label">CONVERSATIONS</span>
           <div className="conversation-list">
@@ -682,6 +1005,7 @@ export function App() {
                 key={item.id}
                 onClick={() => void selectConversation(item.id)}
               >
+                <span className="conversation-icon" aria-hidden="true">🍃</span>
                 <strong>{item.title}</strong>
                 <small>
                   {item.activeJobId ? `JOB ${item.activeJobId.slice(0, 8)}` : 'NO ACTIVE JOB'}
@@ -693,7 +1017,15 @@ export function App() {
           </div>
         </div>
 
-        <div className="rail-section">
+        <div
+          className="rail-resizer"
+          role="separator"
+          aria-orientation="horizontal"
+          title="拖动调整会话历史和 AgentProfile 的高度"
+          onPointerDown={beginRailResize}
+        />
+
+        <div className="rail-section profile-section">
           <span className="rail-label">AGENT PROFILE</span>
           <div className="profile-card">
             <span className="profile-icon">A</span>
@@ -705,14 +1037,14 @@ export function App() {
           </div>
         </div>
 
-        <div className="rail-spacer" />
+        </div>
 
         <button
           className="rail-action"
           type="button"
           onClick={() => setProviderPanelOpen((value) => !value)}
         >
-          <span>⚙</span>
+          <span>⚙️</span>
           模型设置
           <small>{executorConfigured ? '已配置' : '待配置'}</small>
         </button>
@@ -728,21 +1060,20 @@ export function App() {
                 : '对话会先经过 Control 意图识别'}
             </span>
           </div>
-          <label className="provider-mode">
-            <span>EXECUTOR</span>
-            <select value={providerMode} onChange={(event) => setProviderMode(event.target.value)}>
-              <option value="auto">Auto</option>
-              {modelCatalog?.models.map((model) => {
-                const configured = model.providerId === 'fake'
-                  || providerConfigs.find((provider) => provider.id === model.providerId)?.configured
-                return (
-                  <option key={model.id} value={model.id} disabled={!configured && model.providerId !== 'fake'}>
-                    {model.displayName}{configured ? '' : '（待配置）'}
-                  </option>
-                )
-              })}
-            </select>
-          </label>
+          <div className="header-selects">
+            <CuteSelect
+              label="EXECUTOR"
+              value={providerMode}
+              options={executorOptions}
+              onChange={setProviderMode}
+            />
+            <CuteSelect
+              label="THEME"
+              value={theme}
+              options={themeOptions}
+              onChange={(value) => setTheme(value as ThemeName)}
+            />
+          </div>
           <button
             className="copy-button"
             type="button"
@@ -757,13 +1088,17 @@ export function App() {
           {conversation?.messages.length ? (
             conversation.messages.map((message) => (
               <article className={`message ${message.role.toLowerCase()}`} key={message.id}>
-                <div className="avatar">{message.role === 'USER' ? '你' : 'A'}</div>
+                <div className="avatar">
+                  <IslandIcon name={message.role === 'USER' ? 'icon-miles' : 'icon-design'} size={22} />
+                </div>
                 <div className="message-body">
                   <div className="message-meta">
                     <strong>{message.role === 'USER' ? 'You' : 'Meta Agent'}</strong>
                     <span>{message.messageType.replaceAll('_', ' ')}</span>
                   </div>
-                  <div className="message-content">{message.content}</div>
+                  <div className="message-content">
+                    <MarkdownMessage content={message.content} />
+                  </div>
                   {message.jobId ? (
                     <div className="message-link">JOB · {message.jobId.slice(0, 8)}</div>
                   ) : null}
@@ -789,9 +1124,34 @@ export function App() {
             </div>
           )}
 
-          {showThinking ? (
+          {streamingAssistant ? (
+            <article className="message assistant streaming">
+              <div className="avatar">
+                <IslandIcon name="icon-design" size={22} />
+              </div>
+              <div className="message-body">
+                <div className="message-meta">
+                  <strong>Meta Agent</strong>
+                  <span>{streamingAssistant.messageType.replaceAll('_', ' ')}</span>
+                </div>
+                <div className="message-content">
+                  {streamingAssistant.content ? (
+                    <MarkdownMessage content={streamingAssistant.content} />
+                  ) : null}
+                </div>
+                <div className="thinking-line compact">
+                  <i />
+                  <i />
+                  <i />
+                  streaming...
+                </div>
+              </div>
+            </article>
+          ) : showThinking ? (
             <article className="message assistant">
-              <div className="avatar">A</div>
+              <div className="avatar">
+                <IslandIcon name="icon-design" size={22} />
+              </div>
               <div className="message-body">
                 <div className="message-meta">
                   <strong>Meta Agent</strong>
@@ -857,17 +1217,25 @@ export function App() {
               placeholder="描述你想完成的事情…"
               value={draft}
               rows={1}
-              disabled={!conversation || sending}
+              disabled={!conversation || composerBusy}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={handleComposerKeyDown}
             />
-            <button type="submit" disabled={!draft.trim() || !conversation || sending}>
-              {sending ? '…' : '↑'}
+            <button type="submit" disabled={!draft.trim() || !conversation || composerBusy}>
+              {composerBusy ? '...' : '↑'}
             </button>
           </form>
           <p>＋ 上传文件 · Enter 发送 · Shift + Enter 换行 · 执行路径不包含模型隐藏思维</p>
         </div>
       </section>
+
+      <div
+        className="inspector-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        title="Drag to resize Agent Path"
+        onPointerDown={beginInspectorResize}
+      />
 
       <aside className="inspector">
         <header className="inspector-header">
@@ -974,23 +1342,17 @@ export function App() {
               <button type="button" onClick={() => setProviderPanelOpen(false)}>×</button>
             </header>
 
-            <label>
-              <span>选择执行模型</span>
-              <select
-                value={settingsModelId}
-                onChange={(event) => {
-                  setSettingsModelId(event.target.value)
-                  setProviderMode(event.target.value)
-                  setProviderTest(null)
-                }}
-              >
-                {modelCatalog?.models.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.displayName} · {model.providerId}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <CuteSelect
+              className="settings-model-select"
+              label="选择执行模型"
+              value={settingsModelId}
+              options={settingsModelOptions}
+              onChange={(value) => {
+                setSettingsModelId(value)
+                setProviderMode(value)
+                setProviderTest(null)
+              }}
+            />
 
             {selectedSettingsModel ? (
               <div className="model-capability-card">
@@ -1092,6 +1454,99 @@ export function App() {
         </div>
       ) : null}
     </main>
+    </IslandCursor>
+  )
+}
+
+function modelIcon(model: ModelSpecView) {
+  if (model.capabilities.vision) return '👀'
+  if (model.capabilities.reasoning || model.capabilities.thinkingMode) return '🧠'
+  if (model.providerId === 'fake') return '🧪'
+  if (model.providerId === 'glm') return '🦉'
+  if (model.providerId === 'deepseek') return '🐋'
+  return '🌿'
+}
+
+function CuteSelect({
+  className,
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  className?: string
+  label: string
+  value: string
+  options: CuteSelectOption[]
+  onChange: (value: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const selected = options.find((option) => option.value === value) ?? options[0]
+
+  useEffect(() => {
+    if (!open) return
+    const closeWhenOutside = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', closeWhenOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeWhenOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [open])
+
+  return (
+    <div className={`cute-select ${className ?? ''}`} ref={rootRef}>
+      <span className="cute-select-label">{label}</span>
+      <button
+        className={`cute-select-trigger ${open ? 'open' : ''}`}
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="cute-select-icon" aria-hidden="true">{selected?.icon ?? '🌿'}</span>
+        <span className="cute-select-value">
+          <strong>{selected?.label ?? '请选择'}</strong>
+          {selected?.meta ? <small>{selected.meta}</small> : null}
+        </span>
+        <span className="cute-select-arrow" aria-hidden="true">⌄</span>
+      </button>
+      {open ? (
+        <div className="cute-select-menu" role="listbox" aria-label={label}>
+          {options.map((option) => (
+            <button
+              className={`cute-select-option ${option.value === value ? 'selected' : ''}`}
+              type="button"
+              role="option"
+              aria-selected={option.value === value}
+              disabled={option.disabled}
+              key={option.value}
+              onClick={() => {
+                if (option.disabled) return
+                onChange(option.value)
+                setOpen(false)
+              }}
+            >
+              <span className="cute-select-icon" aria-hidden="true">{option.icon ?? '🌿'}</span>
+              <span className="cute-select-value">
+                <strong>{option.label}</strong>
+                {option.meta ? <small>{option.meta}</small> : null}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -1136,4 +1591,47 @@ function isCompactPathNode(node: AgentPathNode) {
     'CHECKPOINT',
     'RECOVERY_ATTEMPT',
   ].includes(node.nodeType)
+}
+
+function hasAssistantAfter(conversation: ConversationView, index: number) {
+  return conversation.messages.slice(index).some((message) => message.role === 'ASSISTANT')
+}
+
+function hideAssistantMessagesAfter(conversation: ConversationView, index: number): ConversationView {
+  return {
+    ...conversation,
+    messages: conversation.messages.filter((message, messageIndex) => (
+      messageIndex < index || message.role !== 'ASSISTANT'
+    )),
+  }
+}
+
+function parseSseFrame(raw: string): SseFrame {
+  const lines = raw.split(/\r?\n/)
+  let event = 'message'
+  const data: string[] = []
+  lines.forEach((line) => {
+    if (line.startsWith('event:')) {
+      event = line.slice('event:'.length).trim()
+      return
+    }
+    if (line.startsWith('data:')) {
+      data.push(line.slice('data:'.length).trimStart())
+    }
+  })
+  return { event, data: data.join('\n') }
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max)
+}
+
+function MarkdownMessage({ content }: { content: string }) {
+  return (
+    <div className="markdown-body">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+        {content}
+      </ReactMarkdown>
+    </div>
+  )
 }

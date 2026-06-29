@@ -33,6 +33,10 @@ management:
 meta-agent:
   artifact:
     root: ${META_AGENT_ARTIFACT_ROOT:./.data/artifacts}
+  chat:
+    response-mode: ${META_AGENT_CHAT_RESPONSE_MODE:sse-replay}
+    stream-timeout-ms: ${META_AGENT_CHAT_STREAM_TIMEOUT_MS:120000}
+    stream-poll-interval-ms: ${META_AGENT_CHAT_STREAM_POLL_INTERVAL_MS:350}
   provider:
     deepseek:
       base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
