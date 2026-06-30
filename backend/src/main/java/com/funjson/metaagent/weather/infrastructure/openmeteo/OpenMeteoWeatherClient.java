@@ -23,6 +23,7 @@ import com.funjson.metaagent.weather.domain.WeatherDailyForecast;
 import com.funjson.metaagent.weather.domain.WeatherForecast;
 import com.funjson.metaagent.weather.domain.WeatherLocation;
 import com.funjson.metaagent.weather.domain.WeatherQuery;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
@@ -48,6 +49,7 @@ public class OpenMeteoWeatherClient implements WeatherClient {
      *
      * @param objectMapper JSON mapper
      */
+    @Autowired
     public OpenMeteoWeatherClient(ObjectMapper objectMapper) {
         this(
                 objectMapper,
