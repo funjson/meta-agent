@@ -12,6 +12,7 @@ import com.funjson.metaagent.intent.domain.IntentRecognition;
 import com.funjson.metaagent.job.api.CreateJobRequest;
 import com.funjson.metaagent.job.api.JobView;
 import com.funjson.metaagent.job.api.TaskGraphTemplateView;
+import com.funjson.metaagent.job.application.DefaultResearchTaskGraphFactory;
 import com.funjson.metaagent.job.application.JobService;
 import com.funjson.metaagent.job.application.TaskGraphPlanner;
 import com.funjson.metaagent.job.application.TaskGraphTemplateService;
@@ -38,6 +39,7 @@ public class ControlJobInitializationService {
 
     private final TaskGraphPlanner taskGraphPlanner;
     private final TaskGraphTemplateService templateService;
+    private final DefaultResearchTaskGraphFactory researchTaskGraphFactory;
     private final JobService jobService;
     private final ClarificationService clarificationService;
     private final ModelCatalogService modelCatalog;
@@ -50,6 +52,7 @@ public class ControlJobInitializationService {
      *
      * @param taskGraphPlanner dynamic TaskGraph planner
      * @param templateService TaskGraphTemplate matcher
+     * @param researchTaskGraphFactory default Deep Research TaskGraph factory
      * @param jobService Job application service
      * @param clarificationService clarification application service
      * @param modelCatalog model capability catalog
@@ -60,6 +63,7 @@ public class ControlJobInitializationService {
     public ControlJobInitializationService(
             TaskGraphPlanner taskGraphPlanner,
             TaskGraphTemplateService templateService,
+            DefaultResearchTaskGraphFactory researchTaskGraphFactory,
             JobService jobService,
             ClarificationService clarificationService,
             ModelCatalogService modelCatalog,
@@ -68,6 +72,7 @@ public class ControlJobInitializationService {
             ObjectMapper objectMapper) {
         this.taskGraphPlanner = taskGraphPlanner;
         this.templateService = templateService;
+        this.researchTaskGraphFactory = researchTaskGraphFactory;
         this.jobService = jobService;
         this.clarificationService = clarificationService;
         this.modelCatalog = modelCatalog;
@@ -100,19 +105,11 @@ public class ControlJobInitializationService {
         TaskGraphTemplateView matchedTemplate = templateService.match(
                 conversation.agentProfileId(),
                 recognition.labels()).orElse(null);
-        // Configured templates are authoritative. Dynamic planning is the
-        // controlled fallback when no template matches the intent labels.
-        TaskGraphPlan taskGraph = matchedTemplate == null
-                ? taskGraphPlanner.plan(new TaskGraphPlanningRequest(
-                        content,
-                        recognition.goalSummary(),
-                        recognition.constraints(),
-                        clarificationQuestion(recognition),
-                        clarificationContractJson(recognition),
-                        recognition.requiresClarification(),
-                        recognition.compoundTask(),
-                        modelPlanningAllowed))
-                : matchedTemplate.graph();
+        TaskGraphPlan taskGraph = chooseTaskGraph(
+                content,
+                recognition,
+                modelPlanningAllowed,
+                matchedTemplate);
         JobView job = jobService.create(
                 "chat-job:" + userMessageId,
                 new CreateJobRequest(content, providerId),
@@ -130,6 +127,39 @@ public class ControlJobInitializationService {
                 job,
                 taskGraph);
         return new InitializedJob(job, taskGraph);
+    }
+
+    /**
+     * Selects the TaskGraph source for the root Job.
+     *
+     * <p>Configured templates stay authoritative. The built-in Deep Research
+     * graph is only used as a framework fallback for explicit deep-research
+     * labels; all other cases keep the normal planner behavior.</p>
+     */
+    private TaskGraphPlan chooseTaskGraph(
+            String content,
+            IntentRecognition recognition,
+            boolean modelPlanningAllowed,
+            TaskGraphTemplateView matchedTemplate) {
+        if (matchedTemplate != null) {
+            return matchedTemplate.graph();
+        }
+        if (!recognition.requiresClarification()
+                && researchTaskGraphFactory.supports(recognition.labels())) {
+            return researchTaskGraphFactory.create(
+                    content,
+                    recognition.goalSummary(),
+                    recognition.constraints());
+        }
+        return taskGraphPlanner.plan(new TaskGraphPlanningRequest(
+                content,
+                recognition.goalSummary(),
+                recognition.constraints(),
+                clarificationQuestion(recognition),
+                clarificationContractJson(recognition),
+                recognition.requiresClarification(),
+                recognition.compoundTask(),
+                modelPlanningAllowed));
     }
 
     /**

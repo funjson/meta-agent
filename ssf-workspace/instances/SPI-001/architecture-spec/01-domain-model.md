@@ -14,6 +14,10 @@
 | LoopContextSnapshot | Value | context | ReAct Loop 的结构化上下文快照 |
 | ToolDefinition | Value | tool | 模型可选择的工具合同；Skill 也以 Tool 形式暴露 |
 | ToolInvocation/ToolResult | Entity/Value | tool/loop | Tool 调用审计和 Observation 输入 |
+| WebSearchRun | Entity | websearch | 一次 `web.search` 查询及结果数量，可挂回 ToolInvocation |
+| WebSearchCandidate | Entity | websearch | 搜索返回的候选来源线索，不等同于已核验证据 |
+| WebSourceDocument | Entity | websearch | 已读取并清洗的公开网页来源，可挂回 ToolInvocation |
+| WebEvidenceItem | Entity | websearch | 从 WebSourceDocument 抽取的可引用证据片段 |
 | Job | Aggregate | job | 整体目标、TaskGraph、父子 Job 和全局验收 |
 | TaskGraphTemplate | Aggregate | job | 版本化配置型图模板 |
 | TaskGraph | Entity | job | Job 内 Task 与依赖关系 |
@@ -100,6 +104,9 @@ Router 输入包含 Conversation Context、open waiting interactions、上一轮
 - ChildJobRequest：请求上层创建阻塞型子 Job。
 - AuthorizationRequest：请求用户批准可委托权限或额外预算。
 - ToolInvocation：请求 Tool Runtime 执行工具。
+- WebSearchRun / WebSearchCandidate：记录 `web.search` 发现了哪些候选来源。
+- WebSourceDocument：记录 `web.fetch` / `web.extract` 实际读取过的来源。
+- WebEvidenceItem：记录 `web.extract` 从来源中抽取出的证据片段。
 - ClarificationRequest：请求用户补足当前动作所需输入。
 
 Loop 只产生请求和结果，不持久化 Job/Task，不修改上层状态。

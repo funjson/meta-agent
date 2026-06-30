@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -33,6 +34,17 @@ import com.funjson.metaagent.tool.domain.ScriptToolSpec;
 import com.funjson.metaagent.tool.domain.ToolResult;
 import com.funjson.metaagent.tool.domain.ToolType;
 import com.funjson.metaagent.websearch.application.WebSearchService;
+import com.funjson.metaagent.websearch.application.port.out.WebResearchStore;
+import com.funjson.metaagent.websearch.domain.WebEvidenceExtraction;
+import com.funjson.metaagent.websearch.domain.WebEvidenceItem;
+import com.funjson.metaagent.websearch.domain.WebResearchContext;
+import com.funjson.metaagent.websearch.domain.WebSearchQuery;
+import com.funjson.metaagent.websearch.domain.WebSearchResult;
+import com.funjson.metaagent.websearch.domain.WebSourceDocument;
+import com.funjson.metaagent.weather.application.WeatherService;
+import com.funjson.metaagent.weather.domain.WeatherDailyForecast;
+import com.funjson.metaagent.weather.domain.WeatherForecast;
+import com.funjson.metaagent.weather.domain.WeatherQuery;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -54,6 +66,8 @@ public class ToolExecutionService {
     private final ClarificationService clarificationService;
     private final FileAttachmentService fileAttachmentService;
     private final WebSearchService webSearchService;
+    private final WebResearchStore webResearchStore;
+    private final WeatherService weatherService;
     private final ObjectMapper objectMapper;
 
     /**
@@ -64,6 +78,7 @@ public class ToolExecutionService {
      * @param clarificationService 澄清服务
      * @param fileAttachmentService 文件附件服务
      * @param webSearchService Web Search 服务
+     * @param webResearchStore Web Research 证据池
      * @param objectMapper JSON Mapper
      */
     public ToolExecutionService(
@@ -72,12 +87,16 @@ public class ToolExecutionService {
             ClarificationService clarificationService,
             FileAttachmentService fileAttachmentService,
             WebSearchService webSearchService,
+            WebResearchStore webResearchStore,
+            WeatherService weatherService,
             ObjectMapper objectMapper) {
         this.toolStore = toolStore;
         this.capabilityApplicationService = capabilityApplicationService;
         this.clarificationService = clarificationService;
         this.fileAttachmentService = fileAttachmentService;
         this.webSearchService = webSearchService;
+        this.webResearchStore = webResearchStore;
+        this.weatherService = weatherService;
         this.objectMapper = objectMapper;
     }
 
@@ -158,27 +177,34 @@ public class ToolExecutionService {
                 command.loopNodeId());
         toolStore.markRunning(invocationId);
         try {
-            ToolResult result = execute(
-                    invocationId,
-                    command,
-                    context);
+            ToolResult result = withToolMetadata(
+                    execute(
+                            invocationId,
+                            command,
+                            context),
+                    command.toolId());
             toolStore.complete(
                     invocationId,
                     json(result.attributes()));
             return result;
         } catch (RuntimeException failure) {
+            Map<String, Object> failureAttributes = new LinkedHashMap<>();
+            failureAttributes.put("toolId", command.toolId());
+            failureAttributes.put("toolType", toolType);
+            failureAttributes.put(
+                    "errorType",
+                    failure.getClass().getSimpleName());
+            failureAttributes.put(
+                    "message",
+                    failure.getMessage() == null
+                            ? "tool failed"
+                            : failure.getMessage());
             ToolResult result = new ToolResult(
                     invocationId,
                     false,
                     failure.getMessage(),
                     "",
-                    Map.of(
-                            "errorType",
-                            failure.getClass().getSimpleName(),
-                            "message",
-                            failure.getMessage() == null
-                                    ? "tool failed"
-                                    : failure.getMessage()));
+                    failureAttributes);
             toolStore.fail(
                     invocationId,
                     result.summary(),
@@ -200,6 +226,9 @@ public class ToolExecutionService {
             case "clarification.request" ->
                     clarificationRequest(invocationId, command, context);
             case "web.search" -> webSearch(invocationId, command);
+            case "web.fetch" -> webFetch(invocationId, command);
+            case "web.extract" -> webExtract(invocationId, command);
+            case "weather.current" -> weatherCurrent(invocationId, command);
             case "file.list" -> fileList(invocationId, context);
             case "file.read" -> fileRead(invocationId, command, context);
             case "file.search" -> fileSearch(invocationId, command, context);
@@ -331,14 +360,31 @@ public class ToolExecutionService {
             ToolInvocationCommand command) {
         String query = required(command.arguments(), "query");
         int limit = intArgument(command.arguments(), "limit", 5);
-        var results = webSearchService.search(query, limit);
+        Integer recencyDays = optionalInt(command.arguments(), "recencyDays");
+        List<String> domains = stringList(command.arguments(), "domains");
+        String locale = String.valueOf(
+                command.arguments().getOrDefault("locale", ""));
+        WebSearchQuery structuredQuery = new WebSearchQuery(
+                query,
+                limit,
+                recencyDays,
+                domains,
+                locale);
+        var results = webSearchService.search(structuredQuery);
+        UUID searchRunId = recordSearchRun(
+                invocationId,
+                command,
+                structuredQuery,
+                results);
         String content = results.isEmpty()
                 ? "没有返回搜索结果。"
                 : results.stream()
-                        .map(result -> "- %s\n  url: %s\n  snippet: %s%s"
+                        .map(result -> "- [%d] %s\n  url: %s\n  sourceType: %s\n  snippet: %s%s"
                                 .formatted(
+                                        result.rank(),
                                         result.title(),
                                         result.url(),
+                                        result.sourceType(),
                                         result.snippet(),
                                         result.publishedAt() == null
                                                 ? ""
@@ -352,8 +398,145 @@ public class ToolExecutionService {
                 "Web search returned " + results.size() + " results",
                 content,
                 Map.of(
+                        "searchRunId", searchRunId,
                         "query", query,
-                        "results", results,
+                        "recencyDays", recencyDays == null ? "" : recencyDays,
+                        "domains", domains,
+                        "results", results.stream()
+                                .map(this::webSearchResultAttributes)
+                                .toList(),
+                        "stdout", content));
+    }
+
+    /**
+     * 打开公开网页并返回清洗后的正文片段。
+     *
+     * @param invocationId ToolInvocation ID
+     * @param command Tool 命令
+     * @return 来源文档
+     */
+    private ToolResult webFetch(
+            UUID invocationId,
+            ToolInvocationCommand command) {
+        String url = required(command.arguments(), "url");
+        int maxChars = intArgument(command.arguments(), "maxChars", 8_000);
+        WebSourceDocument document = webSearchService.fetch(url, maxChars);
+        UUID sourceDocumentId = recordSourceDocument(
+                invocationId,
+                command,
+                document);
+        String content = """
+                title: %s
+                url: %s
+                sourceType: %s
+                fetchedAt: %s
+
+                %s
+                """.formatted(
+                document.title(),
+                document.url(),
+                document.sourceType(),
+                document.fetchedAt(),
+                document.text()).trim();
+        return new ToolResult(
+                invocationId,
+                true,
+                "Fetched and extracted web document",
+                content,
+                Map.of(
+                        "sourceDocumentId", sourceDocumentId,
+                        "document", webSourceDocumentAttributes(document),
+                        "stdout", content));
+    }
+
+    /**
+     * 从公开网页抽取与查询相关的证据片段。
+     *
+     * @param invocationId ToolInvocation ID
+     * @param command Tool 命令
+     * @return 证据列表
+     */
+    private ToolResult webExtract(
+            UUID invocationId,
+            ToolInvocationCommand command) {
+        String url = required(command.arguments(), "url");
+        String query = String.valueOf(
+                command.arguments().getOrDefault("query", ""));
+        int maxEvidence = intArgument(
+                command.arguments(),
+                "maxEvidence",
+                5);
+        WebEvidenceExtraction extraction = webSearchService.extract(
+                url,
+                query,
+                maxEvidence);
+        UUID sourceDocumentId = recordSourceDocument(
+                invocationId,
+                command,
+                extraction.document());
+        List<WebEvidenceItem> evidence = extraction.evidence();
+        recordEvidenceItems(
+                sourceDocumentId,
+                invocationId,
+                command,
+                evidence);
+        String content = evidence.isEmpty()
+                ? "没有抽取到匹配证据。"
+                : evidence.stream()
+                        .map(item -> "- %s\n  url: %s\n  sourceType: %s\n  relevance: %.2f"
+                                .formatted(
+                                        item.excerpt(),
+                                        item.sourceUrl(),
+                                        item.sourceType(),
+                                        item.relevanceScore()))
+                        .reduce((left, right) -> left + "\n" + right)
+                        .orElse("");
+        return new ToolResult(
+                invocationId,
+                true,
+                "Extracted " + evidence.size() + " web evidence items",
+                content,
+                Map.of(
+                        "sourceDocumentId", sourceDocumentId,
+                        "url", url,
+                        "query", query,
+                        "evidence", evidence.stream()
+                                .map(this::webEvidenceAttributes)
+                                .toList(),
+                        "stdout", content));
+    }
+
+    /**
+     * 查询当前天气和短期预报。
+     *
+     * @param invocationId ToolInvocation ID
+     * @param command Tool 调用命令
+     * @return 天气 Observation
+     */
+    private ToolResult weatherCurrent(
+            UUID invocationId,
+            ToolInvocationCommand command) {
+        WeatherQuery query = new WeatherQuery(
+                required(command.arguments(), "location"),
+                intArgument(command.arguments(), "forecastDays", 3),
+                String.valueOf(command.arguments()
+                        .getOrDefault("locale", "zh-CN")));
+        WeatherForecast forecast = weatherService.forecast(query);
+        String content = renderWeather(forecast);
+        return new ToolResult(
+                invocationId,
+                true,
+                "Weather returned current conditions for "
+                        + forecast.location().name(),
+                content,
+                Map.of(
+                        "location", weatherLocationAttributes(forecast),
+                        "current", weatherCurrentAttributes(forecast),
+                        "daily", forecast.daily().stream()
+                                .map(this::weatherDailyAttributes)
+                                .toList(),
+                        "fetchedAt", forecast.fetchedAt().toString(),
+                        "timezone", forecast.timezone(),
                         "stdout", content));
     }
 
@@ -683,12 +866,316 @@ public class ToolExecutionService {
             case "skill.search" -> ToolType.SKILL_SEARCH;
             case "skill.load" -> ToolType.SKILL_LOAD;
             case "clarification.request" -> ToolType.CLARIFICATION;
-            case "web.search" -> ToolType.RETRIEVAL;
+            case "web.search", "web.fetch", "web.extract",
+                    "weather.current" ->
+                    ToolType.RETRIEVAL;
             case "file.list", "file.read", "file.search" ->
                     ToolType.RETRIEVAL;
             case "file.write" -> ToolType.FUNCTION;
             default -> ToolType.FUNCTION;
         };
+    }
+
+    /**
+     * 给 Tool 结果补充统一元数据。
+     *
+     * @param result 原始 Tool 结果
+     * @param toolId Tool ID
+     * @return 可用于纠偏、Agent Path 和审计重放的 Tool 结果
+     */
+    private ToolResult withToolMetadata(
+            ToolResult result,
+            String toolId) {
+        Map<String, Object> attributes = new LinkedHashMap<>(
+                result.attributes());
+        attributes.putIfAbsent("toolId", toolId);
+        attributes.putIfAbsent("toolType", resolveToolType(toolId).name());
+        return new ToolResult(
+                result.invocationId(),
+                result.success(),
+                result.summary(),
+                result.content(),
+                attributes);
+    }
+
+    /**
+     * Converts a search result into JSON-safe primitive attributes.
+     */
+    private Map<String, Object> webSearchResultAttributes(
+            WebSearchResult result) {
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        attributes.put("title", result.title());
+        attributes.put("url", result.url());
+        attributes.put("snippet", result.snippet());
+        attributes.put(
+                "publishedAt",
+                result.publishedAt() == null
+                        ? ""
+                        : result.publishedAt().toString());
+        attributes.put("provider", result.provider());
+        attributes.put("rank", result.rank());
+        attributes.put("sourceType", result.sourceType().name());
+        return attributes;
+    }
+
+    /**
+     * Converts a fetched web document into bounded JSON-safe attributes.
+     */
+    private Map<String, Object> webSourceDocumentAttributes(
+            WebSourceDocument document) {
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        attributes.put("url", document.url());
+        attributes.put("title", document.title());
+        attributes.put("description", document.description());
+        attributes.put("sourceType", document.sourceType().name());
+        attributes.put("contentType", document.contentType());
+        attributes.put("contentHash", document.contentHash());
+        attributes.put("fetchedAt", document.fetchedAt().toString());
+        attributes.put("textExcerpt", abbreviate(document.text()));
+        return attributes;
+    }
+
+    /**
+     * Converts an evidence item into JSON-safe primitive attributes.
+     */
+    private Map<String, Object> webEvidenceAttributes(
+            WebEvidenceItem evidence) {
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        attributes.put("sourceUrl", evidence.sourceUrl());
+        attributes.put("title", evidence.title());
+        attributes.put("excerpt", evidence.excerpt());
+        attributes.put("relevanceScore", evidence.relevanceScore());
+        attributes.put("sourceType", evidence.sourceType().name());
+        return attributes;
+    }
+
+    /**
+     * 持久化一次搜索运行及候选来源。
+     *
+     * @param invocationId ToolInvocation ID
+     * @param command Tool 调用命令
+     * @param query 结构化搜索查询
+     * @param results 搜索候选结果
+     * @return SearchRun ID
+     */
+    /**
+     * Renders weather data as a compact model-facing observation.
+     */
+    private String renderWeather(WeatherForecast forecast) {
+        String daily = forecast.daily().stream()
+                .map(day -> "- %s：%s，%.1f℃~%.1f℃，降水概率 %d%%"
+                        .formatted(
+                                day.date(),
+                                day.condition(),
+                                day.minTemperatureCelsius(),
+                                day.maxTemperatureCelsius(),
+                                day.precipitationProbabilityMaxPercent()))
+                .reduce((left, right) -> left + "\n" + right)
+                .orElse("- 暂无预报");
+        return """
+                地点：%s%s%s
+                查询时间：%s（%s）
+                当前：%s，%.1f℃，体感 %.1f℃，湿度 %d%%，降水 %.1fmm，风速 %.1fkm/h
+
+                短期预报：
+                %s
+                """.formatted(
+                forecast.location().name(),
+                forecast.location().admin1().isBlank()
+                        ? ""
+                        : "，" + forecast.location().admin1(),
+                forecast.location().country().isBlank()
+                        ? ""
+                        : "，" + forecast.location().country(),
+                forecast.fetchedAt(),
+                forecast.timezone(),
+                forecast.current().condition(),
+                forecast.current().temperatureCelsius(),
+                forecast.current().apparentTemperatureCelsius(),
+                forecast.current().relativeHumidityPercent(),
+                forecast.current().precipitationMm(),
+                forecast.current().windSpeedKmh(),
+                daily).trim();
+    }
+
+    /**
+     * Converts weather location into JSON-safe primitive attributes.
+     */
+    private Map<String, Object> weatherLocationAttributes(
+            WeatherForecast forecast) {
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        attributes.put("name", forecast.location().name());
+        attributes.put("country", forecast.location().country());
+        attributes.put("admin1", forecast.location().admin1());
+        attributes.put("latitude", forecast.location().latitude());
+        attributes.put("longitude", forecast.location().longitude());
+        attributes.put("timezone", forecast.location().timezone());
+        return attributes;
+    }
+
+    /**
+     * Converts current weather into JSON-safe primitive attributes.
+     */
+    private Map<String, Object> weatherCurrentAttributes(
+            WeatherForecast forecast) {
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        attributes.put("time", forecast.current().time());
+        attributes.put("condition", forecast.current().condition());
+        attributes.put(
+                "temperatureCelsius",
+                forecast.current().temperatureCelsius());
+        attributes.put(
+                "apparentTemperatureCelsius",
+                forecast.current().apparentTemperatureCelsius());
+        attributes.put(
+                "relativeHumidityPercent",
+                forecast.current().relativeHumidityPercent());
+        attributes.put("precipitationMm", forecast.current().precipitationMm());
+        attributes.put("windSpeedKmh", forecast.current().windSpeedKmh());
+        attributes.put(
+                "windDirectionDegrees",
+                forecast.current().windDirectionDegrees());
+        attributes.put("weatherCode", forecast.current().weatherCode());
+        return attributes;
+    }
+
+    /**
+     * Converts daily weather into JSON-safe primitive attributes.
+     */
+    private Map<String, Object> weatherDailyAttributes(
+            WeatherDailyForecast day) {
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        attributes.put("date", day.date().toString());
+        attributes.put("condition", day.condition());
+        attributes.put(
+                "maxTemperatureCelsius",
+                day.maxTemperatureCelsius());
+        attributes.put(
+                "minTemperatureCelsius",
+                day.minTemperatureCelsius());
+        attributes.put(
+                "precipitationProbabilityMaxPercent",
+                day.precipitationProbabilityMaxPercent());
+        return attributes;
+    }
+
+    /**
+     * Persists one search run and its candidate sources.
+     *
+     * @param invocationId ToolInvocation ID
+     * @param command Tool invocation command
+     * @param query structured web search query
+     * @param results search candidates
+     * @return SearchRun ID
+     */
+    private UUID recordSearchRun(
+            UUID invocationId,
+            ToolInvocationCommand command,
+            WebSearchQuery query,
+            List<WebSearchResult> results) {
+        UUID searchRunId = UUID.randomUUID();
+        WebResearchContext researchContext = webResearchContext(
+                invocationId,
+                command);
+        // SearchRun 是“搜了什么”的审计锚点；Candidate 只是候选，不等同于已采信证据。
+        webResearchStore.insertSearchRun(
+                searchRunId,
+                researchContext,
+                query,
+                results.size());
+        int fallbackRank = 1;
+        for (var result : results) {
+            webResearchStore.insertSearchCandidate(
+                    UUID.randomUUID(),
+                    searchRunId,
+                    researchContext,
+                    rankedResult(result, fallbackRank++));
+        }
+        return searchRunId;
+    }
+
+    /**
+     * 为 legacy 测试或异常搜索客户端补齐稳定 rank。
+     */
+    private WebSearchResult rankedResult(
+            WebSearchResult result,
+            int fallbackRank) {
+        if (result.rank() > 0) {
+            return result;
+        }
+        return new WebSearchResult(
+                result.title(),
+                result.url(),
+                result.snippet(),
+                result.publishedAt(),
+                result.provider(),
+                fallbackRank,
+                result.sourceType());
+    }
+
+    /**
+     * 持久化已读取的网页来源。
+     *
+     * @param invocationId ToolInvocation ID
+     * @param command Tool 调用命令
+     * @param document 已清洗来源文档
+     * @return SourceDocument ID
+     */
+    private UUID recordSourceDocument(
+            UUID invocationId,
+            ToolInvocationCommand command,
+            WebSourceDocument document) {
+        UUID sourceDocumentId = UUID.randomUUID();
+        // 来源文档挂在 ToolInvocation 下，Agent Path 才能解释“哪个工具读了哪个来源”。
+        webResearchStore.insertSourceDocument(
+                sourceDocumentId,
+                webResearchContext(invocationId, command),
+                document);
+        return sourceDocumentId;
+    }
+
+    /**
+     * 按抽取顺序持久化网页证据片段。
+     *
+     * @param sourceDocumentId 来源文档 ID
+     * @param invocationId ToolInvocation ID
+     * @param command Tool 调用命令
+     * @param evidence 证据片段
+     */
+    private void recordEvidenceItems(
+            UUID sourceDocumentId,
+            UUID invocationId,
+            ToolInvocationCommand command,
+            List<WebEvidenceItem> evidence) {
+        int rank = 1;
+        for (WebEvidenceItem item : evidence) {
+            // rank_no 保留模型看到证据的顺序，后续评测可复盘引用来源是否稳定。
+            webResearchStore.insertEvidenceItem(
+                    UUID.randomUUID(),
+                    sourceDocumentId,
+                    webResearchContext(invocationId, command),
+                    item,
+                    rank++);
+        }
+    }
+
+    /**
+     * 从 ToolInvocationCommand 生成 Web Research 追踪上下文。
+     *
+     * @param invocationId ToolInvocation ID
+     * @param command Tool 调用命令
+     * @return Web Research 上下文
+     */
+    private WebResearchContext webResearchContext(
+            UUID invocationId,
+            ToolInvocationCommand command) {
+        return new WebResearchContext(
+                invocationId,
+                command.jobId(),
+                command.taskId(),
+                command.taskRunId(),
+                command.loopRunId(),
+                command.loopNodeId());
     }
 
     /**
@@ -717,6 +1204,37 @@ public class ToolExecutionService {
                     "Tool argument is required: " + key);
         }
         return String.valueOf(value);
+    }
+
+    /**
+     * Reads an optional integer argument.
+     */
+    private Integer optionalInt(Map<String, Object> arguments, String key) {
+        Object value = arguments.get(key);
+        if (value == null || String.valueOf(value).isBlank()) {
+            return null;
+        }
+        return Integer.parseInt(String.valueOf(value));
+    }
+
+    /**
+     * Reads a string list argument that may arrive as an array or comma text.
+     */
+    private List<String> stringList(Map<String, Object> arguments, String key) {
+        Object value = arguments.get(key);
+        if (value == null) {
+            return List.of();
+        }
+        if (value instanceof List<?> list) {
+            return list.stream()
+                    .map(String::valueOf)
+                    .filter(item -> !item.isBlank())
+                    .toList();
+        }
+        return java.util.Arrays.stream(String.valueOf(value).split(","))
+                .map(String::trim)
+                .filter(item -> !item.isBlank())
+                .toList();
     }
 
     /**

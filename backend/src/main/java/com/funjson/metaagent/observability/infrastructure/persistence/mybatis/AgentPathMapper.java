@@ -135,6 +135,42 @@ public interface AgentPathMapper {
             @Param("conversationId") UUID conversationId);
 
     /**
+     * 查询 Web SearchRun 节点。
+     *
+     * @param conversationId Conversation ID
+     * @return 节点列表
+     */
+    List<AgentPathNode> findWebSearchRunNodes(
+            @Param("conversationId") UUID conversationId);
+
+    /**
+     * 查询 Web SearchCandidate 节点。
+     *
+     * @param conversationId Conversation ID
+     * @return 节点列表
+     */
+    List<AgentPathNode> findWebSearchCandidateNodes(
+            @Param("conversationId") UUID conversationId);
+
+    /**
+     * 查询 Web SourceDocument 节点。
+     *
+     * @param conversationId Conversation ID
+     * @return 节点列表
+     */
+    List<AgentPathNode> findWebSourceDocumentNodes(
+            @Param("conversationId") UUID conversationId);
+
+    /**
+     * 查询 Web EvidenceItem 节点。
+     *
+     * @param conversationId Conversation ID
+     * @return 节点列表
+     */
+    List<AgentPathNode> findWebEvidenceItemNodes(
+            @Param("conversationId") UUID conversationId);
+
+    /**
      * 查询 Checkpoint 节点。
      *
      * @param conversationId Conversation ID

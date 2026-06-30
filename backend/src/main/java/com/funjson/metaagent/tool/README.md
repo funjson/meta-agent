@@ -25,6 +25,8 @@ classDiagram
   ToolCatalogService --> ToolStore
   ToolCatalogService --> ToolDefinition
   ToolExecutionService --> ToolStore
+  ToolExecutionService --> WebSearchService
+  ToolExecutionService --> WebResearchStore
   ToolExecutionService --> ToolInvocationCommand
   ToolExecutionService --> ToolResult
   ToolStore ..> ScriptToolSpec
@@ -47,13 +49,23 @@ LoopContextBuilder 注入 ToolCatalog
 
 - `ToolCatalogService`：合并 framework tool 和 SkillPackage 中的脚本 Tool。
 - `ToolCatalogService.modelToolSpecs()`：把内部 `web.search` 等 Tool ID 转成 Provider 安全函数名，例如 `web_search`，供原生 function calling 使用。
-- `ToolExecutionService`：执行 framework tool、受控脚本 Tool，并维护 ToolInvocation 审计。
+- `ToolExecutionService`：执行 framework tool、受控脚本 Tool，并维护 ToolInvocation 审计；
+  所有 ToolResult 都会补充 `toolId/toolType` 元数据，供 Loop 纠偏和 Agent Path 使用。
 - `skill.search`：返回当前可见脚本 Tool / Skill executable 摘要，不改变运行状态。
 - `skill.load`：把指定 CapabilityRef 应用到当前 LoopNode，并写入 CapabilityLoad 审计。
 - `file.list/read/search/write`：第一批框架内置文件工具，只访问当前 Conversation 受控文件空间。
-- `web.search`：第一批网络工具，返回标题、URL、摘要和可选发布时间，作为 Observation 进入下一轮。
+- `web.search`：返回候选来源标题、URL、摘要、发布时间和来源类型；它只负责发现来源，
+  会写入 `web_search_run` / `web_search_candidate`，但不把摘要视作最终证据。
+- `web.fetch`：读取公开 URL 并抽取清洗正文、标题、来源类型和内容哈希，同时写入
+  `web_source_document`。
+- `web.extract`：基于 query 从公开 URL 抽取可引用证据片段，同时写入
+  `web_source_document` / `web_evidence_item`。
 - `ToolStore`：隔离 MyBatis 持久化细节。
 - `ScriptToolSpec`：脚本解释器、参数 schema、副作用等级和脚本文本的不可变快照。
+
+`ToolInvocation` 只审计“调用了哪个工具、参数和结果是什么”；Web Research 的搜索运行、候选、
+来源和证据由 `websearch` 模块的 `WebResearchStore` 持久化，Agent Path 再把它们挂回
+对应 ToolCall 下。
 
 ## 扩展点与测试入口
 

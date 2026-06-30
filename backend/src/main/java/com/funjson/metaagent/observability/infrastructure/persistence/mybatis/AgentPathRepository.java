@@ -53,6 +53,10 @@ public class AgentPathRepository implements AgentPathQuery {
         nodes.addAll(mapper.findCapabilityLoadNodes(conversationId));
         nodes.addAll(mapper.findModelCallNodes(conversationId));
         nodes.addAll(mapper.findToolInvocationNodes(conversationId));
+        nodes.addAll(mapper.findWebSearchRunNodes(conversationId));
+        nodes.addAll(mapper.findWebSearchCandidateNodes(conversationId));
+        nodes.addAll(mapper.findWebSourceDocumentNodes(conversationId));
+        nodes.addAll(mapper.findWebEvidenceItemNodes(conversationId));
         nodes.addAll(mapper.findCheckpointNodes(conversationId));
         nodes.addAll(mapper.findEvidenceNodes(conversationId));
         nodes.addAll(mapper.findRecoveryAttemptNodes(conversationId));
@@ -164,10 +168,14 @@ public class AgentPathRepository implements AgentPathQuery {
             case "LOOP_PHASE" -> 8;
             case "CAPABILITY_LOAD" -> 9;
             case "MODEL_CALL", "TOOL_CALL" -> 10;
-            case "CHECKPOINT" -> 11;
-            case "EVIDENCE" -> 12;
-            case "RECOVERY_ATTEMPT" -> 13;
-            case "JOB_COMPLETION" -> 14;
+            case "WEB_SEARCH_RUN" -> 11;
+            case "WEB_SEARCH_CANDIDATE" -> 12;
+            case "WEB_SOURCE" -> 13;
+            case "WEB_EVIDENCE" -> 14;
+            case "CHECKPOINT" -> 15;
+            case "EVIDENCE" -> 16;
+            case "RECOVERY_ATTEMPT" -> 17;
+            case "JOB_COMPLETION" -> 18;
             default -> 20;
         };
     }

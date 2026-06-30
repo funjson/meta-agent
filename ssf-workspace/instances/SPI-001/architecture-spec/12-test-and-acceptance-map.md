@@ -33,6 +33,25 @@
 | AC-017 | 多个独立 READY Task 可并行派发，完成时依赖解锁和 Job 终态只提交一次 |
 | AC-018 | CHILD_JOB_COMPLETED 可重放并自动恢复 origin TaskRun |
 | AC-019 | SkillPackage 路径安全、资源 checksum、脚本 executable 元数据和 SubagentProfile 权限收窄通过 |
+| AC-022 | Web Search 搜索运行、候选、来源和证据均可持久化并在 Agent Path 展示 |
+| AC-023 | Deep Research 默认 TaskGraph 只在显式 deep-research 标签下启用，并保持 `Job→TaskGraph→Task→Loop` 分层 |
+| AC-024 | ReAct 纠偏允许 `web.search→web.fetch/web.extract→MODEL_CALL`，禁止重复同向 `web.search` 死循环 |
+
+## Web Search / Deep Research 冒烟用例
+
+| 用例 | 用户输入 | 预期结果 |
+|---|---|---|
+| 快速搜索问答 | `北京天气如何` | 可触发 `web.search`，Agent Path 出现 `WEB_SEARCH_RUN/WEB_SEARCH_CANDIDATE`；下一轮不应重复 `web.search` 死循环，最终回复需说明信息来源或局限 |
+| 读取来源回答 | `搜索一下 Java 21 虚拟线程的官方说明，并基于来源解释适用场景` | 先搜索候选，再通过 `web.fetch` 或 `web.extract` 读取官方/高相关来源；Agent Path 出现 `WEB_SOURCE`，回复不得只依据搜索摘要 |
+| 深度研究 | `请 deep research 一下生产级 web search/deep research agent 应该怎么设计，给我结构化报告和来源` | 若无配置模板，创建默认 6 节点 Deep Research TaskGraph：研究计划、来源发现、来源读取、证据矩阵、报告合成、质量复核；每个 Task 仍由 Loop 执行 |
+| 证据池复用 | 深度研究过程中后续 Task | `LoopContextBuilder` 注入 `Web Research Evidence Pool`；后续 Task 能看到已有 search/candidate/source/evidence，不需要把证据伪造成聊天消息 |
+
+自动化覆盖：
+
+- `ToolExecutionServiceWebResearchTest`：`web.search` 写 search run/candidate，`web.extract` 写 source/evidence。
+- `LoopCorrectionPolicyTest`：验证重复搜索阻断与 search→fetch/extract 链路。
+- `DefaultResearchTaskGraphFactoryTest`：验证默认 Deep Research 图结构与 DAG。
+- `LoopContextBuilderWebResearchTest`：验证 Web Research Evidence Pool 注入 Loop Context。
 
 ## 故障注入点
 

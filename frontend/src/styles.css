@@ -721,6 +721,7 @@ button {
 .loop-color { background: #a8d5a2; }
 .clarification-color { background: #d7a86c; }
 .evidence-color { background: #d6ba77; }
+.web-evidence-color { background: #67c7d4; }
 
 .path-list {
   min-height: 0;
@@ -806,6 +807,13 @@ button {
   background: #d6ba77;
 }
 
+.type-web_search_run .path-dot,
+.type-web_search_candidate .path-dot,
+.type-web_source .path-dot,
+.type-web_evidence .path-dot {
+  background: #67c7d4;
+}
+
 .type-clarification_request .path-dot {
   background: #d7a86c;
 }
@@ -818,6 +826,14 @@ button {
 .type-loop_phase .path-node-card {
   border-color: #2c352d;
   background: #181d18;
+}
+
+.type-web_search_run .path-node-card,
+.type-web_search_candidate .path-node-card,
+.type-web_source .path-node-card,
+.type-web_evidence .path-node-card {
+  border-color: #26424a;
+  background: #172024;
 }
 
 .path-node-card {
@@ -2265,6 +2281,22 @@ button {
 .app-shell[data-theme^="animal"] .type-tool_call .path-node-head strong::before,
 .app-shell[data-theme^="animal"] .type-tool_result .path-node-head strong::before {
   content: "🧰";
+}
+
+.app-shell[data-theme^="animal"] .type-web_search_run .path-node-head strong::before {
+  content: "🔎";
+}
+
+.app-shell[data-theme^="animal"] .type-web_search_candidate .path-node-head strong::before {
+  content: "🗂️";
+}
+
+.app-shell[data-theme^="animal"] .type-web_source .path-node-head strong::before {
+  content: "🌐";
+}
+
+.app-shell[data-theme^="animal"] .type-web_evidence .path-node-head strong::before {
+  content: "📌";
 }
 
 @keyframes island-bounce {

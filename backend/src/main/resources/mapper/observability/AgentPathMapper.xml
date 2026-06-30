@@ -378,6 +378,109 @@
         ORDER BY invocation.created_at
     </select>
 
+    <select id="findWebSearchRunNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('web-search:', BIN_TO_UUID(search_run.id)) AS id,
+            CONCAT(
+                'tool-call:',
+                BIN_TO_UUID(search_run.tool_invocation_id)
+            ) AS parentId,
+            'WEB_SEARCH_RUN' AS nodeType,
+            'Web 搜索' AS label,
+            'CANDIDATES_READY' AS status,
+            CONCAT(
+                LEFT(
+                    REPLACE(REPLACE(search_run.query_text, '\r', ' '), '\n', ' '),
+                    160
+                ),
+                ' · results=',
+                search_run.result_count
+            ) AS summary,
+            search_run.created_at AS occurredAt
+        FROM web_search_run search_run
+        JOIN job ON job.id = search_run.job_id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY search_run.created_at
+    </select>
+
+    <select id="findWebSearchCandidateNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('web-candidate:', BIN_TO_UUID(candidate.id)) AS id,
+            CONCAT(
+                'web-search:',
+                BIN_TO_UUID(candidate.search_run_id)
+            ) AS parentId,
+            'WEB_SEARCH_CANDIDATE' AS nodeType,
+            CONCAT('候选来源 · #', candidate.rank_no) AS label,
+            candidate.source_type AS status,
+            CONCAT(
+                LEFT(
+                    REPLACE(REPLACE(candidate.title, '\r', ' '), '\n', ' '),
+                    100
+                ),
+                ' · ',
+                LEFT(
+                    REPLACE(REPLACE(candidate.snippet, '\r', ' '), '\n', ' '),
+                    160
+                ),
+                ' · ',
+                LEFT(candidate.url, 160)
+            ) AS summary,
+            candidate.created_at AS occurredAt
+        FROM web_search_candidate candidate
+        JOIN job ON job.id = candidate.job_id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY candidate.created_at, candidate.rank_no
+    </select>
+
+    <select id="findWebSourceDocumentNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('web-source:', BIN_TO_UUID(source.id)) AS id,
+            CONCAT(
+                'tool-call:',
+                BIN_TO_UUID(source.tool_invocation_id)
+            ) AS parentId,
+            'WEB_SOURCE' AS nodeType,
+            CONCAT('Web 来源 · ', source.source_type) AS label,
+            'FETCHED' AS status,
+            CONCAT(
+                LEFT(REPLACE(REPLACE(source.title, '\r', ' '), '\n', ' '), 120),
+                ' · ',
+                LEFT(source.url, 160)
+            ) AS summary,
+            source.created_at AS occurredAt
+        FROM web_source_document source
+        JOIN job ON job.id = source.job_id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY source.created_at
+    </select>
+
+    <select id="findWebEvidenceItemNodes" resultMap="agentPathNodeMap">
+        SELECT
+            CONCAT('web-evidence:', BIN_TO_UUID(evidence.id)) AS id,
+            CONCAT(
+                'web-source:',
+                BIN_TO_UUID(evidence.source_document_id)
+            ) AS parentId,
+            'WEB_EVIDENCE' AS nodeType,
+            CONCAT('Web 证据 · #', evidence.rank_no) AS label,
+            'EXTRACTED' AS status,
+            CONCAT(
+                'score=',
+                FORMAT(evidence.relevance_score, 2),
+                ' · ',
+                LEFT(
+                    REPLACE(REPLACE(evidence.excerpt, '\r', ' '), '\n', ' '),
+                    220
+                )
+            ) AS summary,
+            evidence.created_at AS occurredAt
+        FROM web_evidence_item evidence
+        JOIN job ON job.id = evidence.job_id
+        WHERE <include refid="conversationFilter"/>
+        ORDER BY evidence.created_at, evidence.rank_no
+    </select>
+
     <select id="findCapabilityLoadNodes" resultMap="agentPathNodeMap">
         SELECT
             CONCAT(

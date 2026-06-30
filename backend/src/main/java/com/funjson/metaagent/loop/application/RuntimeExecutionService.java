@@ -50,6 +50,10 @@ import org.springframework.stereotype.Service;
 @Service
 public class RuntimeExecutionService implements LoopRunExecutor {
 
+    private static final int DEFAULT_MODEL_CALL_TOKENS = 1024;
+    private static final int LONG_FORM_MODEL_CALL_TOKENS = 2048;
+    private static final int RESEARCH_REPORT_MODEL_CALL_TOKENS = 4096;
+
     private final RuntimeTransactionService transactions;
     private final ModelProviderRegistry modelProviders;
     private final PromptRegistry promptRegistry;
@@ -249,7 +253,7 @@ public class RuntimeExecutionService implements LoopRunExecutor {
             return LoopPlan.modelCall(
                     "返回用户可见结果，或通过原生 tool_call 产生可观察工具结果",
                     "执行模型直接决定回答或调用工具",
-                    1024);
+                    modelCallTokenBudget(context));
         }
         return loopCorrectionPolicy.correctPlan(
                 context,
@@ -267,6 +271,36 @@ public class RuntimeExecutionService implements LoopRunExecutor {
      * @param capabilityContext Skill 作用域
      * @param contextSnapshot Loop 上下文快照
      * @return 统一动作结果
+     */
+    /**
+     * Chooses a model output budget based on task shape and recovery feedback.
+     *
+     * @param context current LoopNode execution context
+     * @return max completion tokens for the next model action
+     */
+    private int modelCallTokenBudget(RunExecutionContext context) {
+        String signal = (context.goal() + "\n" + context.feedback())
+                .toLowerCase();
+        if (signal.matches("(?s).*(deep[- ]?research|research report|"
+                + "evidence matrix|report synthesis|quality review|"
+                + "深度研究|研究报告|证据矩阵|结构化报告|调研报告).*")) {
+            return RESEARCH_REPORT_MODEL_CALL_TOKENS;
+        }
+        if (signal.matches("(?s).*(报告|方案|总结|分析|对比|长文|完整版本|"
+                + "不要截断|被截断|finishreason=length).*")) {
+            return LONG_FORM_MODEL_CALL_TOKENS;
+        }
+        return DEFAULT_MODEL_CALL_TOKENS;
+    }
+
+    /**
+     * Dispatches the structured plan into a model, tool, or scheduler action.
+     *
+     * @param context LoopNode context
+     * @param plan structured action plan
+     * @param capabilityContext scoped Skill context
+     * @param contextSnapshot assembled Loop context snapshot
+     * @return unified action result
      */
     private LoopActionResult executeAction(
             RunExecutionContext context,
@@ -503,11 +537,14 @@ public class RuntimeExecutionService implements LoopRunExecutor {
     private java.util.List<ModelToolSpec> nativeToolsFor(
             RunExecutionContext context,
             ModelProvider modelProvider) {
-        if (!modelProvider.supportsNativeToolCalling(context.providerId())
-                || !loopCorrectionPolicy.allowNativeTools(context)) {
+        if (!modelProvider.supportsNativeToolCalling(context.providerId())) {
             return java.util.List.of();
         }
-        return toolCatalogService.modelToolSpecs();
+        return toolCatalogService.modelToolSpecs().stream()
+                .filter(tool -> loopCorrectionPolicy.allowNativeTool(
+                        context,
+                        tool.toolId()))
+                .toList();
     }
 
     /**

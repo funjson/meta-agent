@@ -16,7 +16,7 @@
 | runtime | AuthorityEnvelope、预算、合同、派生请求、中立事件合同 | 业务协调器 |
 | capability | SkillPackage、SkillCompiler、资源校验和运行时 Capability Load | 绕过 Tool Runtime 直接执行脚本 |
 | tool | ToolDefinition、ToolInvocation、ToolResult、Skill as Tool 目录 | 绕过权限执行外部副作用 |
-| websearch | WebSearchClient、搜索源适配、结果解析和截断 | 最终回答生成、ToolInvocation 审计 |
+| websearch | WebSearchClient、搜索源适配、网页读取、证据抽取和证据池持久化 | 最终回答生成、ToolInvocation 审计 |
 | profile | AgentProfile 与 SubagentProfile | Job/Task/Loop 状态 |
 | observability | Agent Path、事件投影与评测事实查询 | 修改执行状态 |
 | web | HTTP Controller、请求校验和响应组装 | 领域状态所有权 |
@@ -184,8 +184,9 @@ v0.1 已提供受控脚本执行器：解释器白名单、临时目录、清空
   `TOOL_CALL + web.search`。
 - `ToolExecutionService` 执行 `web.search` 后把结果写入 `tool_invocation.result_json`；
   `LoopEvaluator` 将 `WEB_SEARCH` 视为中间 Observation，下一轮模型基于来源摘要合成答案。
-- 外部网页内容属于不可信输入；当前只返回搜索摘要，不抓取完整网页正文。后续 deep research
-  风格能力需要增加来源去重、网页抓取、引用格式、长时间后台 Worker 和搜索结果评测。
+- 外部网页内容属于不可信输入；搜索摘要只作为候选线索。读取网页正文、证据抽取、
+  来源持久化和引用复盘由 `web.fetch` / `web.extract` 与 Web Research 证据池承担。
+  Deep Research 的来源去重、证据矩阵和报告生成由 Job/TaskGraph 编排。
 
 ## 实现校准 r15：Native Tool Calling、纠偏与 Thinking Mode
 
@@ -206,3 +207,57 @@ LoopPlan(MODEL_CALL)
   工具 Schema，防止 `web.search → Observation → web.search` 这类循环。
 - Thinking/Reasoning 进入 Provider 合同，但 v0.1 默认关闭。DeepSeek reasoner 不暴露工具调用，
   只解析 `reasoning_content`；GLM 等后续 Provider 可将 `ModelThinkingMode` 映射到官方 thinking 配置。
+
+## 实现校准 r16：Web Research 证据池与 Agent Path
+
+- `websearch` 新增 `WebResearchStore`，把 `web.fetch` 产生的 `WebSourceDocument` 和
+  `web.extract` 产生的 `WebEvidenceItem` 持久化为正式证据池。
+- `ToolInvocation` 继续只审计“调用了哪个工具、参数和结果是什么”；来源和证据归
+  `websearch` 所有，并通过 `tool_invocation_id` 挂回 Agent Path。
+- Agent Path 新增 `WEB_SOURCE` 与 `WEB_EVIDENCE` 节点，结构为：
+
+```text
+LoopNode
+  → ToolCall(web.fetch / web.extract)
+      → WEB_SOURCE
+          → WEB_EVIDENCE
+```
+
+- `web.search` 仍只代表候选检索，不把未读取网页的搜索摘要写成证据；后续 deep-research
+  的多轮搜索、来源去重、证据矩阵和报告生成应由 Job/TaskGraph 编排，不塞进单个 Tool。
+
+## 实现校准 r17：生产级 Web Search / Deep Research
+
+- `web.search` 从临时工具结果升级为可观测检索链路：新增 `web_search_run` 与
+  `web_search_candidate`，记录查询、候选、排名、来源类型和 Provider。
+- Agent Path 结构扩展为：
+
+```text
+LoopNode
+  → ToolCall(web.search)
+      → WEB_SEARCH_RUN
+          → WEB_SEARCH_CANDIDATE
+  → ToolCall(web.fetch / web.extract)
+      → WEB_SOURCE
+          → WEB_EVIDENCE
+```
+
+- `LoopContextBuilder` 将同一 Job 的 Web Research Evidence Pool 注入后续 Loop Context，
+  并明确区分 `SEARCH/CANDIDATE`（线索）与 `SOURCE/EVIDENCE`（可作为依据的已读取内容）。
+- `LoopCorrectionPolicy` 从“一旦有工具 Observation 就关闭全部工具”调整为按 Tool ID
+  过滤：`web.search` 后允许 `web.fetch/web.extract`，`web.fetch` 后允许 `web.extract`，
+  `web.extract` 后收敛到 `MODEL_CALL`。
+- Job 层新增 `DefaultResearchTaskGraphFactory`，当无配置型 `TaskGraphTemplate` 且意图标签
+  显式为 `research-depth:deep-research` 时，创建默认研究 TaskGraph：
+
+```text
+research-plan
+  → source-discovery
+      → source-reading
+          → evidence-matrix
+              → report-synthesis
+                  → quality-review
+```
+
+- 默认 Deep Research 仍然完全落在 `Job → TaskGraph → Task → TaskRun → LoopRun`，
+  不恢复 Workflow 概念；配置型 `TaskGraphTemplate` 后续可以覆盖默认图。

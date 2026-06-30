@@ -15,6 +15,7 @@ classDiagram
   JobReplayService --> JobStore
   ChildJobCoordinator --> TaskGraphTemplateService
   ChildJobCoordinator --> TaskGraphPlanner
+  DefaultResearchTaskGraphFactory --> TaskGraphValidator
 ```
 
 ## 核心流程
@@ -26,10 +27,28 @@ ChildJobRequest → 校验递归/预算边界 → 创建子 Job 与派生事实 
 Control 事务提交后，如果进程在提交与 Worker 入队之间崩溃，`JobReplayService` 会扫描
 `CREATED` 且存在 READY Task、但还没有 TaskRun 的 Job，并重新提交 `JobStartCommand`。
 
+Deep Research 不是独立 Workflow。Job 初始化时先匹配 AgentProfile 下激活的
+`TaskGraphTemplate`；如果没有匹配模板且 Intent 标签显式包含
+`research-depth:deep-research`，`DefaultResearchTaskGraphFactory` 会创建默认线性
+TaskGraph：
+
+```text
+research-plan
+  → source-discovery
+      → source-reading
+          → evidence-matrix
+              → report-synthesis
+                  → quality-review
+```
+
+每个节点仍然是普通 Task/TaskRun/LoopRun。前置 Task 产物通过依赖上下文传给后续 Task，
+Web 证据通过 `WebResearchStore` 注入 Loop Context。
+
 ## 类与功能关系
 
 - `JobService`：Job 与 TaskGraph 创建/查询。
 - `TaskGraphTemplateService`：模板版本、checksum 与匹配。
+- `DefaultResearchTaskGraphFactory`：无模板时的框架默认 Deep Research TaskGraph。
 - `ChildJobCoordinator`：阻塞型子 Job 物化。
 - `JobReplayService`：补齐 Control 提交成功但后台 Worker 未启动的恢复缺口。
 - `JobCompletionPolicy`：全局验收。

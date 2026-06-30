@@ -16,7 +16,10 @@ public enum PromptUseCase {
             "v1",
             "classpath:prompts/control/intent-recognition/v1/system.md",
             "classpath:prompts/control/intent-recognition/v1/user.md",
-            Set.of("conversationContext", "userMessage")),
+            Set.of(
+                    "conversationContext",
+                    "currentTime",
+                    "userMessage")),
 
     /** Control Kernel 的等待交互结构化路由 Prompt。 */
     CONTROL_PENDING_INTERACTION_ROUTING(

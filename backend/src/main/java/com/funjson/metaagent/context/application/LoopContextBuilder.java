@@ -9,8 +9,10 @@ import com.funjson.metaagent.context.domain.ContextBlockType;
 import com.funjson.metaagent.context.domain.LoopContextSnapshot;
 import com.funjson.metaagent.file.application.FileAttachmentService;
 import com.funjson.metaagent.loop.domain.RunExecutionContext;
+import com.funjson.metaagent.runtime.application.CurrentTimeContextProvider;
 import com.funjson.metaagent.tool.application.ToolCatalogService;
 import com.funjson.metaagent.tool.application.port.out.ToolStore;
+import com.funjson.metaagent.websearch.application.port.out.WebResearchStore;
 import org.springframework.stereotype.Service;
 
 /**
@@ -23,6 +25,8 @@ public class LoopContextBuilder {
     private final ToolStore toolStore;
     private final ContextAssembler contextAssembler;
     private final FileAttachmentService fileAttachmentService;
+    private final WebResearchStore webResearchStore;
+    private final CurrentTimeContextProvider currentTimeContextProvider;
 
     /**
      * 创建 Loop Context Builder。
@@ -31,16 +35,21 @@ public class LoopContextBuilder {
      * @param toolStore Tool Store，用于从 Job 反查 Conversation
      * @param contextAssembler 统一上下文装配器
      * @param fileAttachmentService 文件附件服务
+     * @param webResearchStore Web Research 证据池
      */
     public LoopContextBuilder(
             ToolCatalogService toolCatalogService,
             ToolStore toolStore,
             ContextAssembler contextAssembler,
-            FileAttachmentService fileAttachmentService) {
+            FileAttachmentService fileAttachmentService,
+            WebResearchStore webResearchStore,
+            CurrentTimeContextProvider currentTimeContextProvider) {
         this.toolCatalogService = toolCatalogService;
         this.toolStore = toolStore;
         this.contextAssembler = contextAssembler;
         this.fileAttachmentService = fileAttachmentService;
+        this.webResearchStore = webResearchStore;
+        this.currentTimeContextProvider = currentTimeContextProvider;
     }
 
     /**
@@ -74,11 +83,30 @@ public class LoopContextBuilder {
                 ContextBlockType.USER_GOAL,
                 "Task Goal",
                 context.goal()));
+        blocks.add(block(
+                ContextBlockType.CONSTRAINT,
+                "Current Time",
+                currentTimeContextProvider.current().promptText()));
         if (!context.feedback().isBlank()) {
             blocks.add(block(
                     ContextBlockType.OBSERVATION,
                     "Parent Feedback",
                     context.feedback()));
+        }
+        String webResearchSummary = webResearchStore.summarizeForJob(
+                context.jobId(),
+                24);
+        if (!webResearchSummary.isBlank()) {
+            blocks.add(block(
+                    ContextBlockType.OBSERVATION,
+                    "Web Research Evidence Pool",
+                    """
+                    以下是当前 Job 已持久化的搜索、候选来源、读取来源和证据片段。
+                    搜索候选不等于已验证证据；回答时优先引用 SOURCE/EVIDENCE，
+                    如果只有 SEARCH/CANDIDATE，请明确说明信息仍未充分核验。
+
+                    %s
+                    """.formatted(webResearchSummary).trim()));
         }
         if (!capabilityContext.scopedContext()
                 .instructionSummary()

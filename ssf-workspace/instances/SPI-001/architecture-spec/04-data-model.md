@@ -27,6 +27,10 @@
 | loop_node | id, loop_run_id, parent_node_id, status, current_phase, active_child_job_id, input_json, output_json |
 | loop_node_phase | id, loop_node_id, sequence_no, phase_type, status, input_json, output_json |
 | clarification_request | id, conversation_id, job_id, task_id, task_run_id, loop_node_id, question, contract_json, answer, resolution_json, status |
+| web_search_run | id, tool_invocation_id, job_id, task_id, task_run_id, loop_run_id, loop_node_id, query_text, recency_days, domains_json, locale, result_count |
+| web_search_candidate | id, search_run_id, tool_invocation_id, job_id, task_id, task_run_id, loop_run_id, loop_node_id, rank_no, title, url, snippet, provider, source_type, published_at |
+| web_source_document | id, tool_invocation_id, job_id, task_id, task_run_id, loop_run_id, loop_node_id, url, title, source_type, content_hash, text_excerpt, fetched_at |
+| web_evidence_item | id, source_document_id, tool_invocation_id, job_id, task_id, task_run_id, loop_run_id, loop_node_id, rank_no, excerpt, relevance_score, source_type |
 
 ## 派生与授权
 
@@ -51,6 +55,8 @@
 | evidence | Loop/Task/Job 验收证据 |
 | recovery_attempt | 恢复决定与执行审计 |
 | model_call / tool_call | 外部调用审计 |
+| web_search_run / web_search_candidate | Web Research 搜索运行和候选池；挂回 ToolInvocation 与 LoopNode |
+| web_source_document / web_evidence_item | Web Research 已读取来源和证据池；挂回 ToolInvocation 与 LoopNode |
 | evaluation_run | Agent 评测事实 |
 
 ## 数据不变量
@@ -66,3 +72,6 @@
 9. 同一 READY Task 只能存在一个非终态 Dispatch；并行完成时必须先锁 Job 再推进依赖。
 10. `skill_resource.path` 必须是包内相对路径，禁止 `..`、绝对路径和符号链接逃逸。
 11. SubagentProfile 生效策略只能等于或窄于父 Job 的 EffectivePolicy。
+12. `web.search` 结果不是证据，只进入 `web_search_run` / `web_search_candidate`；
+    只有 `web.fetch` / `web.extract` 实际读取过的来源才进入 `web_source_document`，
+    只有从来源正文抽取的片段才进入 `web_evidence_item`。

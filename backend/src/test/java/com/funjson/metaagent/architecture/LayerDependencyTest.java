@@ -208,6 +208,7 @@ class LayerDependencyTest {
                 "capability",
                 "tool",
                 "websearch",
+                "weather",
                 "recovery",
                 "observability",
                 "profile",

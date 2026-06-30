@@ -22,6 +22,8 @@ import javax.xml.parsers.DocumentBuilderFactory;
 import com.funjson.metaagent.runtime.domain.RuntimeStateException;
 import com.funjson.metaagent.websearch.application.port.out.WebSearchClient;
 import com.funjson.metaagent.websearch.domain.WebSearchResult;
+import com.funjson.metaagent.websearch.domain.WebSearchQuery;
+import com.funjson.metaagent.websearch.domain.WebSourceType;
 import org.springframework.stereotype.Component;
 import org.w3c.dom.Element;
 import org.xml.sax.InputSource;
@@ -42,10 +44,10 @@ public class BingRssWebSearchClient implements WebSearchClient {
             .build();
 
     @Override
-    public List<WebSearchResult> search(String query, int limit) {
+    public List<WebSearchResult> search(WebSearchQuery query) {
         try {
             String encoded = URLEncoder.encode(
-                    query,
+                    effectiveQuery(query),
                     StandardCharsets.UTF_8);
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create("https://www.bing.com/search?q="
@@ -66,7 +68,7 @@ public class BingRssWebSearchClient implements WebSearchClient {
                         "WEB_SEARCH_PROVIDER_FAILED",
                         "Bing RSS returned HTTP " + response.statusCode());
             }
-            return parse(response.body(), limit);
+            return parse(response.body(), query.limit());
         } catch (RuntimeStateException exception) {
             throw exception;
         } catch (Exception exception) {
@@ -115,7 +117,10 @@ public class BingRssWebSearchClient implements WebSearchClient {
                         title,
                         url,
                         abbreviate(text(item, "description")),
-                        parseDate(text(item, "pubDate"))));
+                        parseDate(text(item, "pubDate")),
+                        "bing-rss",
+                        results.size() + 1,
+                        inferSourceType(url)));
             }
             return List.copyOf(results);
         } catch (Exception exception) {
@@ -123,6 +128,61 @@ public class BingRssWebSearchClient implements WebSearchClient {
                     "WEB_SEARCH_RESULT_PARSE_FAILED",
                     "Unable to parse search result feed");
         }
+    }
+
+    /**
+     * Adds provider-compatible domain and freshness hints to the query.
+     */
+    private String effectiveQuery(WebSearchQuery query) {
+        String value = query.query();
+        if (!query.domains().isEmpty()) {
+            String domainFilter = query.domains().stream()
+                    .map(domain -> "site:" + domain)
+                    .reduce((left, right) -> left + " OR " + right)
+                    .orElse("");
+            value = value + " (" + domainFilter + ")";
+        }
+        if (query.recencyDays() != null) {
+            java.time.LocalDate after = java.time.LocalDate.now()
+                    .minusDays(query.recencyDays());
+            value = value + " after:" + after;
+        }
+        return value;
+    }
+
+    /**
+     * Infers a coarse source type without fetching the page.
+     */
+    private WebSourceType inferSourceType(String url) {
+        String lower = url == null ? "" : url.toLowerCase();
+        if (lower.contains("arxiv.org")
+                || lower.contains("doi.org")
+                || lower.endsWith(".pdf")) {
+            return WebSourceType.PAPER;
+        }
+        if (lower.contains(".gov")
+                || lower.contains(".edu")
+                || lower.contains("/docs")
+                || lower.contains("docs.")
+                || lower.contains("developer.")) {
+            return WebSourceType.OFFICIAL;
+        }
+        if (lower.contains("news")
+                || lower.contains("reuters")
+                || lower.contains("apnews")) {
+            return WebSourceType.NEWS;
+        }
+        if (lower.contains("stackoverflow")
+                || lower.contains("reddit")
+                || lower.contains("forum")) {
+            return WebSourceType.FORUM;
+        }
+        if (lower.contains("blog")
+                || lower.contains("medium.com")
+                || lower.contains("substack")) {
+            return WebSourceType.BLOG;
+        }
+        return WebSourceType.UNKNOWN;
     }
 
     /**

@@ -75,10 +75,12 @@ LoopPlan(MODEL_CALL)
 已经派生了 Child Loop / Child Job 时，才使用结构化 JSON planner。非法 JSON 会让当前
 Loop 失败并进入可观测错误链路，不能静默退回旧的硬编码 MODEL_CALL。
 
-`LoopCorrectionPolicy` 是长任务纠偏入口。v0.1 的确定性规则是：如果上一轮已经产生工具
-Observation，下一轮模型调用不再暴露工具 Schema，强制基于已有 Observation 合成结果，
-避免 `web.search → Observation → web.search` 这类漂移/循环。后续可扩展目标重锚、
-动作重复签名、预算异常、LLM Judge 漂移评分等策略。
+`LoopCorrectionPolicy` 是长任务纠偏入口。v0.1 的确定性规则是按 Tool ID 过滤下一轮工具：
+`web.search` 后允许 `web.fetch/web.extract`，`web.fetch` 后允许 `web.extract`，`web.extract`
+后不再暴露 Web 工具并强制进入结果合成。这样既阻断
+`web.search → Observation → web.search` 循环，也保留 Deep Research 需要的
+`search → read/extract → synthesize` 链路。后续可扩展目标重锚、动作重复签名、预算异常、
+LLM Judge 漂移评分等策略。
 
 ## 类与功能关系
 

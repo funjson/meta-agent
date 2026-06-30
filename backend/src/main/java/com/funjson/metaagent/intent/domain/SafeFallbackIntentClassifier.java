@@ -32,8 +32,45 @@ public class SafeFallbackIntentClassifier implements IntentClassifier {
                 "模型意图分类不可用；按保守策略创建 Job，约束由后续规划阶段补充。",
                 List.of("完成必须提供可验证 Evidence"),
                 false,
-                false,
+                researchLike(normalized),
                 IntentRiskLevel.MEDIUM,
-                List.of("general")));
+                fallbackLabels(normalized)));
+    }
+
+    /**
+     * Builds conservative soft labels for context acquisition.
+     */
+    private List<String> fallbackLabels(String value) {
+        if (deepResearchLike(value)) {
+            return List.of(
+                    "general",
+                    "needs-web",
+                    "needs-citation",
+                    "research-depth:deep-research");
+        }
+        if (researchLike(value)) {
+            return List.of(
+                    "general",
+                    "needs-web",
+                    "needs-citation",
+                    "research-depth:search-qa");
+        }
+        return List.of("general");
+    }
+
+    /**
+     * Detects only high-signal research/search wording in fallback mode.
+     */
+    private boolean researchLike(String value) {
+        String lower = value.toLowerCase();
+        return lower.matches("(?s).*(搜索|搜一下|联网|网上|最新|新闻|天气|价格|政策|版本|资料|引用|来源|调研|研究|deep research|research|search|latest|citation|source).*");
+    }
+
+    /**
+     * Detects explicit long-form research wording only.
+     */
+    private boolean deepResearchLike(String value) {
+        String lower = value.toLowerCase();
+        return lower.matches("(?s).*(深度研究|深入研究|深度调研|深入调研|长报告|系统研究|deep research).*");
     }
 }

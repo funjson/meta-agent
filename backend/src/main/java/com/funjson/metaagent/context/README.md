@@ -30,6 +30,7 @@ classDiagram
   class ContextBlockType
   class ToolCatalogService
   class FileAttachmentService
+  class WebResearchStore
 
   ContextAssembler --> ContextEnvelope
   ContextAssembler --> ConversationFactStore
@@ -41,6 +42,7 @@ classDiagram
   LoopContextBuilder --> LoopContextSnapshot
   LoopContextBuilder --> ContextAssembler
   LoopContextBuilder --> FileAttachmentService
+  LoopContextBuilder --> WebResearchStore
   LoopContextSnapshot --> ContextBlock
   ContextBlock --> ContextBlockType
   LoopContextBuilder --> ToolCatalogService
@@ -62,6 +64,7 @@ RunExecutionContext
   + CapabilityPlanningContext
   + ToolCatalog
   + Conversation Files
+  + Web Research Evidence Pool
   + ContextEnvelope projection
   → LoopContextBuilder
   → LoopContextSnapshot
@@ -72,7 +75,9 @@ RunExecutionContext
 
 - Conversation memory 压缩。
 - ConversationFact 抽取、合并、过期和置信度策略。
-- RAG/file-search/web-search Observation 注入。
+- RAG/file-search/web-search Observation 注入；Web Research 证据池以
+  `Web Research Evidence Pool` 形式进入 Loop Context，并区分
+  `SEARCH/CANDIDATE` 与 `SOURCE/EVIDENCE`。
 - Conversation 文件清单注入；文件正文必须由模型通过 `file.read` 显式读取。
 - Token 预算裁剪。
 - 上下文块重要性评分和淘汰策略。

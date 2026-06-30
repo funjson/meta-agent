@@ -1253,6 +1253,7 @@ export function App() {
           <span><i className="loop-color" />Loop</span>
           <span><i className="clarification-color" />Clarification</span>
           <span><i className="evidence-color" />Evidence</span>
+          <span><i className="web-evidence-color" />Web Research</span>
           {path.length ? (
             <div className="path-actions">
               <button

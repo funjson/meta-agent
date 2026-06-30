@@ -132,6 +132,24 @@ class LoopEvaluatorTest {
     }
 
     @Test
+    void adjustsWhenModelOutputWasTruncatedByTokenLimit() {
+        var evaluation = evaluator.evaluate(
+                context(0, 1),
+                new LoopActionResult(
+                        LoopActionType.MODEL_CALL,
+                        "fake/fake-deterministic-v1",
+                        "#### 4.1",
+                        java.util.Map.of("finishReason", "length")),
+                LoopExecutionPolicy.baseline(),
+                1);
+
+        assertThat(evaluation.decision())
+                .isEqualTo(LoopEvaluationDecision.ADJUST);
+        assertThat(evaluation.summary()).contains("max_tokens");
+        assertThat(evaluation.feedback()).contains("完整");
+    }
+
+    @Test
     void failsWhenEmptyResultExhaustsBudget() {
         var evaluation = evaluator.evaluate(
                 context(2, 3),

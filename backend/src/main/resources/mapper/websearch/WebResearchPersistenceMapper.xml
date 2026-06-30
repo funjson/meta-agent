@@ -1,0 +1,159 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funjson.metaagent.websearch.infrastructure.persistence.mybatis.WebResearchPersistenceMapper">
+
+    <insert id="insertSearchRun">
+        INSERT INTO web_search_run (
+            id, tool_invocation_id, job_id, task_id, task_run_id,
+            loop_run_id, loop_node_id, query_text, recency_days,
+            domains_json, locale, result_count
+        ) VALUES (
+            #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{toolInvocationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{queryText},
+            #{recencyDays,jdbcType=INTEGER},
+            CAST(#{domainsJson} AS JSON),
+            #{locale},
+            #{resultCount}
+        )
+    </insert>
+
+    <insert id="insertSearchCandidate">
+        INSERT INTO web_search_candidate (
+            id, search_run_id, tool_invocation_id, job_id, task_id,
+            task_run_id, loop_run_id, loop_node_id, rank_no, title, url,
+            snippet, provider, source_type, published_at
+        ) VALUES (
+            #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{searchRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{toolInvocationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{rankNo},
+            #{title},
+            #{url},
+            #{snippet},
+            #{provider},
+            #{sourceType},
+            #{publishedAt,jdbcType=TIMESTAMP}
+        )
+    </insert>
+
+    <insert id="insertSourceDocument">
+        INSERT INTO web_source_document (
+            id, tool_invocation_id, job_id, task_id, task_run_id,
+            loop_run_id, loop_node_id, url, title, description, source_type,
+            content_type, content_hash, text_excerpt, fetched_at
+        ) VALUES (
+            #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{toolInvocationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{url},
+            #{title},
+            #{description},
+            #{sourceType},
+            #{contentType},
+            #{contentHash},
+            #{textExcerpt},
+            #{fetchedAt}
+        )
+    </insert>
+
+    <insert id="insertEvidenceItem">
+        INSERT INTO web_evidence_item (
+            id, source_document_id, tool_invocation_id, job_id, task_id,
+            task_run_id, loop_run_id, loop_node_id, rank_no, source_url,
+            title, excerpt, relevance_score, source_type
+        ) VALUES (
+            #{id,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{sourceDocumentId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{toolInvocationId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler},
+            #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{taskId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{taskRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{loopRunId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{loopNodeId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler,jdbcType=BINARY},
+            #{rankNo},
+            #{sourceUrl},
+            #{title},
+            #{excerpt},
+            #{relevanceScore},
+            #{sourceType}
+        )
+    </insert>
+
+    <select id="findResearchSummaryRows" resultType="map">
+        SELECT *
+        FROM (
+            SELECT
+                search_run.created_at AS occurredAt,
+                'SEARCH' AS artifactType,
+                search_run.query_text AS title,
+                CONCAT(
+                    'results=',
+                    search_run.result_count,
+                    CASE
+                        WHEN search_run.locale IS NULL
+                             OR search_run.locale = '' THEN ''
+                        ELSE CONCAT(', locale=', search_run.locale)
+                    END
+                ) AS summary,
+                NULL AS url
+            FROM web_search_run search_run
+            WHERE search_run.job_id =
+                #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+            UNION ALL
+            SELECT
+                candidate.created_at AS occurredAt,
+                'CANDIDATE' AS artifactType,
+                candidate.title AS title,
+                LEFT(
+                    REPLACE(REPLACE(candidate.snippet, '\r', ' '), '\n', ' '),
+                    220
+                ) AS summary,
+                candidate.url AS url
+            FROM web_search_candidate candidate
+            WHERE candidate.job_id =
+                #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+            UNION ALL
+            SELECT
+                source.created_at AS occurredAt,
+                'SOURCE' AS artifactType,
+                source.title AS title,
+                LEFT(source.text_excerpt, 220) AS summary,
+                source.url AS url
+            FROM web_source_document source
+            WHERE source.job_id =
+                #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+            UNION ALL
+            SELECT
+                evidence.created_at AS occurredAt,
+                'EVIDENCE' AS artifactType,
+                evidence.title AS title,
+                LEFT(
+                    REPLACE(REPLACE(evidence.excerpt, '\r', ' '), '\n', ' '),
+                    260
+                ) AS summary,
+                evidence.source_url AS url
+            FROM web_evidence_item evidence
+            WHERE evidence.job_id =
+                #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+        ) artifact
+        ORDER BY artifact.occurredAt DESC
+        LIMIT #{limit}
+    </select>
+</mapper>

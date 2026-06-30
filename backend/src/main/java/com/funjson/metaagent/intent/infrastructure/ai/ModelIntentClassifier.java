@@ -16,6 +16,7 @@ import com.funjson.metaagent.prompt.domain.PromptUseCase;
 import com.funjson.metaagent.provider.application.ModelProviderRegistry;
 import com.funjson.metaagent.provider.application.port.out.ProviderSecretPort;
 import com.funjson.metaagent.provider.domain.ModelRequest;
+import com.funjson.metaagent.runtime.application.CurrentTimeContextProvider;
 import com.funjson.metaagent.intent.application.port.out.ModelIntentClassifierPort;
 import org.springframework.stereotype.Component;
 
@@ -32,6 +33,7 @@ public class ModelIntentClassifier implements ModelIntentClassifierPort {
     private final ProviderSecretPort secretStore;
     private final PromptRegistry promptRegistry;
     private final ObjectMapper objectMapper;
+    private final CurrentTimeContextProvider currentTimeContextProvider;
 
     /**
      * 创建模型意图分类器。
@@ -45,11 +47,13 @@ public class ModelIntentClassifier implements ModelIntentClassifierPort {
             ModelProviderRegistry providerRegistry,
             ProviderSecretPort secretStore,
             PromptRegistry promptRegistry,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            CurrentTimeContextProvider currentTimeContextProvider) {
         this.providerRegistry = providerRegistry;
         this.secretStore = secretStore;
         this.promptRegistry = promptRegistry;
         this.objectMapper = objectMapper;
+        this.currentTimeContextProvider = currentTimeContextProvider;
     }
 
     /**
@@ -69,6 +73,8 @@ public class ModelIntentClassifier implements ModelIntentClassifierPort {
                     Map.of(
                             "conversationContext",
                             request.conversationContext(),
+                            "currentTime",
+                            currentTimeContextProvider.current().promptText(),
                             "userMessage",
                             request.userMessage()));
             var response = providerRegistry.require("deepseek").generate(new ModelRequest(

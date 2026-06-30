@@ -36,5 +36,7 @@ class BingRssWebSearchClientTest {
                 "https://example.com/a");
         assertThat(results.getFirst().snippet()).isEqualTo("Snippet text");
         assertThat(results.getFirst().publishedAt()).isNotNull();
+        assertThat(results.getFirst().provider()).isEqualTo("bing-rss");
+        assertThat(results.getFirst().rank()).isEqualTo(1);
     }
 }

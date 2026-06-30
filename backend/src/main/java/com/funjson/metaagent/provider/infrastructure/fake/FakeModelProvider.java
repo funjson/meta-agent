@@ -72,6 +72,16 @@ public class FakeModelProvider implements ModelProvider {
                 || "loop.action-planning".equals(request.prompt().promptId())) {
             return null;
         }
+        if (isWeatherGoal(normalizedGoal)
+                && hasTool(request, "weather.current")) {
+            return toolCallResponse(
+                    request,
+                    "weather.current",
+                    java.util.Map.of(
+                            "location", weatherLocation(normalizedGoal),
+                            "forecastDays", 3,
+                            "locale", "zh-CN"));
+        }
         if (normalizedGoal.matches("(?is).*(搜索|搜一下|网上|网络|最新|新闻|资料|外部事实|核验|search|web|latest|news|external|research|weather).*")
                 && hasTool(request, "web.search")) {
             return toolCallResponse(
@@ -143,6 +153,39 @@ public class FakeModelProvider implements ModelProvider {
      * @param request 模型请求
      * @return LoopPlan JSON
      */
+    /**
+     * Detects weather goals without depending on terminal display encoding.
+     *
+     * @param value normalized user goal
+     * @return whether the goal asks for weather
+     */
+    private boolean isWeatherGoal(String value) {
+        return value.matches("(?is).*(\\u5929\\u6c14|\\u6c14\\u6e29|"
+                + "\\u964d\\u96e8|\\u98ce\\u529b|weather|forecast).*");
+    }
+
+    /**
+     * Extracts a tiny deterministic location for fake tool calls.
+     *
+     * @param value normalized user goal
+     * @return location argument for weather.current
+     */
+    private String weatherLocation(String value) {
+        if (value.contains("\u5317\u4eac")) {
+            return "\u5317\u4eac";
+        }
+        if (value.contains("\u4e0a\u6d77")) {
+            return "\u4e0a\u6d77";
+        }
+        return value;
+    }
+
+    /**
+     * Returns a valid structured action for the ReAct Planning prompt.
+     *
+     * @param request model request
+     * @return LoopPlan JSON
+     */
     private String actionPlanFor(ModelRequest request) {
         String userPrompt = request.prompt().userMessage();
         String goal = userPrompt.replaceFirst(
@@ -157,6 +200,21 @@ public class FakeModelProvider implements ModelProvider {
                       "maxTokens": 512
                     }
                     """;
+        }
+        if (isWeatherGoal(goal)) {
+            return """
+                    {
+                      "actionType": "TOOL_CALL",
+                      "toolId": "weather.current",
+                      "summary": "需要查询实时天气工具",
+                      "completionCriterion": "天气 Observation 进入上下文",
+                      "arguments": {
+                        "location": "%s",
+                        "forecastDays": 3,
+                        "locale": "zh-CN"
+                      }
+                    }
+                    """.formatted(weatherLocation(goal).replace("\"", "\\\""));
         }
         if (goal.matches("(?is).*(搜索|搜一下|网上|网络|最新|新闻|资料|外部事实|核验|search|web|latest|news|external|research).*")) {
             return """

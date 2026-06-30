@@ -36,6 +36,26 @@ public class LoopEvaluator implements LoopCompletionPolicy {
         String content = actionResult.content();
         boolean canAdjust = context.depth() < policy.maxDepth()
                 && currentNodeCount < policy.maxLoopNodes();
+        if (actionResult.actionType() == LoopActionType.MODEL_CALL
+                && isLengthLimited(actionResult)) {
+            if (canAdjust) {
+                // A length-limited model answer is not a valid user artifact:
+                // ask the next LoopNode to produce a complete bounded version.
+                return new LoopEvaluation(
+                        LoopEvaluationDecision.ADJUST,
+                        "模型输出到达 max_tokens 上限，不能作为最终结果",
+                        "上一轮模型输出因 finishReason=length 被截断。"
+                                + "请基于当前 Conversation Context、工具 Observation "
+                                + "和原始目标，生成一份完整但更紧凑的最终版本；"
+                                + "不要只续写半截内容，也不要暴露截断或内部执行细节。"
+                                + "上一轮已生成内容摘要："
+                                + summarize(content, 12_000));
+            }
+            return new LoopEvaluation(
+                    LoopEvaluationDecision.FAIL,
+                    "模型输出被截断且 LoopTree 预算已耗尽",
+                    "Model output was truncated by max_tokens");
+        }
         if (actionResult.actionType() == LoopActionType.CLARIFICATION_REQUEST) {
             if (canAdjust) {
                 // 澄清回答是继续执行所需的输入事实，不是最终用户产物。
@@ -54,12 +74,16 @@ public class LoopEvaluator implements LoopCompletionPolicy {
         }
         if (isIntermediateToolObservation(actionResult.actionType())) {
             if (canAdjust) {
+                String toolId = toolId(actionResult);
                 // Tool/RAG/File/Skill 的结果是 Observation，下一轮模型需要基于它生成最终用户产物。
                 return new LoopEvaluation(
                         LoopEvaluationDecision.ADJUST,
                         "工具动作已完成，需要基于 Observation 继续生成用户结果",
                         "上一轮工具动作 "
                                 + actionResult.actionType().name()
+                                + (toolId.isBlank()
+                                        ? ""
+                                        : "（toolId=" + toolId + "）")
                                 + " 返回："
                                 + summarize(content, 12_000)
                                 + "。请结合 Conversation Context、工具 Observation "
@@ -107,6 +131,18 @@ public class LoopEvaluator implements LoopCompletionPolicy {
     }
 
     /**
+     * Detects provider-level token-limit stops.
+     *
+     * @param actionResult model action result
+     * @return true if provider stopped because max tokens were reached
+     */
+    private boolean isLengthLimited(LoopActionResult actionResult) {
+        Object finishReason = actionResult.attributes().get("finishReason");
+        return finishReason != null
+                && "length".equalsIgnoreCase(String.valueOf(finishReason));
+    }
+
+    /**
      * 判断模型是否把“后续继续查/继续搜索”当成了最终回复。
      */
     private boolean promisesAnotherToolCall(String content) {
@@ -141,6 +177,17 @@ public class LoopEvaluator implements LoopCompletionPolicy {
                     + "请说明已有信息的局限，并给出当前能可靠回答的内容，不要承诺后续工具调用。";
         }
         return "上一次动作泄露了内部执行术语；请改写成面向用户的自然回复。";
+    }
+
+    /**
+     * 从工具 Observation 属性中读取 Tool ID。
+     *
+     * @param actionResult 动作结果
+     * @return Tool ID；不存在时返回空串
+     */
+    private String toolId(LoopActionResult actionResult) {
+        Object value = actionResult.attributes().get("toolId");
+        return value == null ? "" : String.valueOf(value).trim();
     }
 
     /**
