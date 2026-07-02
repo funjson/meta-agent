@@ -10,6 +10,8 @@ import com.funjson.metaagent.context.domain.LoopContextSnapshot;
 import com.funjson.metaagent.file.application.FileAttachmentService;
 import com.funjson.metaagent.loop.domain.RunExecutionContext;
 import com.funjson.metaagent.runtime.application.CurrentTimeContextProvider;
+import com.funjson.metaagent.runtime.application.port.out.TaskIntentScopeStore;
+import com.funjson.metaagent.runtime.domain.TaskIntentScope;
 import com.funjson.metaagent.tool.application.ToolCatalogService;
 import com.funjson.metaagent.tool.application.port.out.ToolStore;
 import com.funjson.metaagent.websearch.application.port.out.WebResearchStore;
@@ -27,6 +29,8 @@ public class LoopContextBuilder {
     private final FileAttachmentService fileAttachmentService;
     private final WebResearchStore webResearchStore;
     private final CurrentTimeContextProvider currentTimeContextProvider;
+    private final TaskScopedContextProjector taskScopedContextProjector;
+    private final TaskIntentScopeStore taskIntentScopes;
 
     /**
      * 创建 Loop Context Builder。
@@ -36,6 +40,9 @@ public class LoopContextBuilder {
      * @param contextAssembler 统一上下文装配器
      * @param fileAttachmentService 文件附件服务
      * @param webResearchStore Web Research 证据池
+     * @param currentTimeContextProvider current time provider
+     * @param taskScopedContextProjector task-scoped context projector
+     * @param taskIntentScopes task intent scope reader
      */
     public LoopContextBuilder(
             ToolCatalogService toolCatalogService,
@@ -43,13 +50,17 @@ public class LoopContextBuilder {
             ContextAssembler contextAssembler,
             FileAttachmentService fileAttachmentService,
             WebResearchStore webResearchStore,
-            CurrentTimeContextProvider currentTimeContextProvider) {
+            CurrentTimeContextProvider currentTimeContextProvider,
+            TaskScopedContextProjector taskScopedContextProjector,
+            TaskIntentScopeStore taskIntentScopes) {
         this.toolCatalogService = toolCatalogService;
         this.toolStore = toolStore;
         this.contextAssembler = contextAssembler;
         this.fileAttachmentService = fileAttachmentService;
         this.webResearchStore = webResearchStore;
         this.currentTimeContextProvider = currentTimeContextProvider;
+        this.taskScopedContextProjector = taskScopedContextProjector;
+        this.taskIntentScopes = taskIntentScopes;
     }
 
     /**
@@ -68,10 +79,18 @@ public class LoopContextBuilder {
                 "Loop Kernel",
                 "你正在执行一个 ReAct 小闭环。你可以使用模型回答、工具、"
                         + "clarification.request 或派生动作；最终用户回复不得暴露内部对象名。"));
+        TaskIntentScope intentScope = taskIntentScopes.findByJobId(
+                        context.jobId())
+                .orElse(TaskIntentScope.unspecified());
         toolStore.findConversationIdByJobId(context.jobId())
                 .ifPresent(conversationId -> {
-                    blocks.addAll(contextAssembler.loopConversationBlocks(
-                            contextAssembler.envelope(conversationId)));
+                    var envelope = contextAssembler.envelope(conversationId);
+                    blocks.addAll(intentScope.specified()
+                            ? taskScopedContextProjector.project(
+                                    envelope,
+                                    context.jobId(),
+                                    intentScope)
+                            : contextAssembler.loopConversationBlocks(envelope));
                     // 文件清单只进入结构化上下文；文件正文必须由模型显式选择 file.read 工具读取。
                     blocks.add(block(
                             ContextBlockType.FILE,
@@ -120,7 +139,10 @@ public class LoopContextBuilder {
         blocks.add(block(
                 ContextBlockType.TOOL_CATALOG,
                 "Available Tools",
-                toolCatalogService.promptSummary()));
+                intentScope.specified()
+                        ? toolCatalogService.promptSummary(
+                                intentScope.allowedToolIds())
+                        : toolCatalogService.promptSummary()));
         blocks.add(block(
                 ContextBlockType.CONTRACT,
                 "Runtime Boundary And Contract",

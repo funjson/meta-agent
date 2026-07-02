@@ -30,4 +30,12 @@ class WebAccessPolicyTest {
                 .isInstanceOf(RuntimeStateException.class)
                 .hasMessageContaining("http and https");
     }
+
+    @Test
+    void rejectsSearchEngineResultPageForFetch() {
+        assertThatThrownBy(() -> policy.requireFetchableDocumentUri(
+                URI.create("https://www.google.com/search?q=java+security")))
+                .isInstanceOf(RuntimeStateException.class)
+                .hasMessageContaining("search result pages");
+    }
 }

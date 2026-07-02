@@ -85,3 +85,12 @@ RunExecutionContext
 - 已解决澄清事实会作为 Conversation 级系统上下文注入模型，但不会作为用户聊天消息展示。
 - `conversation_fact` 保存用户在澄清或普通对话中已经明确给出的结构化事实；
   这些事实会注入 Intent 与 Loop Context，但不会被伪造成聊天消息。
+
+## r18 任务作用域上下文
+
+- `TaskScopedContextProjector` 在 Loop Context 构建阶段保留可见聊天历史，但只注入当前
+  `Job + TaskIntentScope` 允许的结构化事实与澄清事实。
+- 稳定身份事实（如姓名、昵称）可以在 Conversation 内复用；用途、风格、长度、地点等任务参数
+  默认写入 `JOB:<jobId>`，避免混合意图兄弟 Job 互相污染。
+- 历史 Job 没有 `TaskIntentScope` 时仍使用旧的 `ContextAssembler.loopConversationBlocks`，
+  保持兼容。

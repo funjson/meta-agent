@@ -127,7 +127,7 @@ public class ControlJobWorker {
                     command.userMessageId(),
                     command.jobId(),
                     null,
-                    "任务执行失败：" + failure.getMessage(),
+                    responseRenderer.renderFailure("任务执行", failure),
                     "TASK_FAILURE");
         }
     }
@@ -164,7 +164,7 @@ public class ControlJobWorker {
                     command.userMessageId(),
                     command.jobId(),
                     command.taskRunId(),
-                    "澄清恢复失败：" + failure.getMessage(),
+                    responseRenderer.renderFailure("任务恢复", failure),
                     "TASK_FAILURE");
         }
     }

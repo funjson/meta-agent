@@ -15,6 +15,7 @@ import java.util.UUID;
  * @param templateVersion TaskGraphTemplate 版本
  * @param subagentProfileId SubagentProfile ID
  * @param subagentProfileVersion SubagentProfile 版本
+ * @param effectivePolicySnapshotJson Job effective policy snapshot JSON
  */
 public record JobCreationContext(
         String agentProfileId,
@@ -26,7 +27,18 @@ public record JobCreationContext(
         UUID templateId,
         Integer templateVersion,
         String subagentProfileId,
-        Integer subagentProfileVersion) {
+        Integer subagentProfileVersion,
+        String effectivePolicySnapshotJson) {
+
+    /**
+     * Normalizes optional JSON policy text.
+     */
+    public JobCreationContext {
+        effectivePolicySnapshotJson = effectivePolicySnapshotJson == null
+                || effectivePolicySnapshotJson.isBlank()
+                        ? "{\"version\":\"v1\"}"
+                        : effectivePolicySnapshotJson.trim();
+    }
 
     /**
      * 创建聊天入口的根 Job 上下文。
@@ -54,7 +66,8 @@ public record JobCreationContext(
                 templateId,
                 templateVersion,
                 null,
-                null);
+                null,
+                "{\"version\":\"v1\"}");
     }
 
     /**
@@ -73,6 +86,29 @@ public record JobCreationContext(
                 null,
                 null,
                 null,
-                null);
+                null,
+                "{\"version\":\"v1\"}");
+    }
+
+    /**
+     * Returns a copy with a concrete effective policy snapshot.
+     *
+     * @param snapshotJson effective policy JSON
+     * @return copied context
+     */
+    public JobCreationContext withEffectivePolicySnapshotJson(
+            String snapshotJson) {
+        return new JobCreationContext(
+                agentProfileId,
+                conversationId,
+                sourceMessageId,
+                parentJobId,
+                rootJobId,
+                recursionDepth,
+                templateId,
+                templateVersion,
+                subagentProfileId,
+                subagentProfileVersion,
+                snapshotJson);
     }
 }

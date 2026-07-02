@@ -36,10 +36,35 @@ public class UserFacingResponseRenderer {
     }
 
     /**
+     * 渲染致命执行失败的兜底用户消息。
+     *
+     * <p>此方法只负责用户可见降噪，不替代 Agent Path、日志和审计表中的内部
+     * 错误记录。异常原文应留在内部观测链路中，避免 SQL、HTTP、堆栈或供应商错误
+     * 直接污染 Conversation Context。</p>
+     *
+     * @param phase 失败发生的大致阶段
+     * @param failure 原始异常
+     * @return 用户可见失败说明
+     */
+    public String renderFailure(String phase, RuntimeException failure) {
+        String normalizedPhase = phase == null || phase.isBlank()
+                ? "任务执行"
+                : phase.trim();
+        return """
+                %s时遇到了一个内部执行问题，我已经把失败节点和上下文记录在右侧执行链路中。
+
+                你可以直接让我重试，或者补充更多约束后重新发起；我会基于已有上下文继续调整。
+                """.formatted(normalizedPhase).trim();
+    }
+
+    /**
      * 过滤明显属于执行框架而非用户结果的行。
      */
     private boolean isInternalLine(String line) {
         String value = line == null ? "" : line.trim();
-        return value.matches(".*(LoopNode|TaskRun|Control|Checkpoint|Observation|Evidence|上下文构建|工具调用|节点已|当前节点|执行闭环).*");
+        return value.matches(".*(LoopNode|TaskRun|Control|Checkpoint|"
+                + "Observation|Evidence|toolId|web\\.fetch|web\\.extract|"
+                + "web\\.search|系统规则|内部执行|上下文构建|工具调用|节点已|"
+                + "当前节点|执行闭环).*");
     }
 }

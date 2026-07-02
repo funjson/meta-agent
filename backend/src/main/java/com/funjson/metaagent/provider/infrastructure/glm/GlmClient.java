@@ -34,6 +34,9 @@ import reactor.core.publisher.Mono;
 @Component
 public class GlmClient implements ProviderConnectionTestPort {
 
+    private static final int DEFAULT_MAX_ATTEMPTS = 5;
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
+
     private final ProviderConfigService configService;
     private final ModelCatalogService modelCatalog;
     private final ModelCallRepository modelCallRepository;
@@ -94,26 +97,7 @@ public class GlmClient implements ProviderConnectionTestPort {
             body.put("max_tokens", request.maxTokens());
             body.put("stream", false);
 
-            String responseBody = WebClient.builder()
-                    .baseUrl(config.baseUrl())
-                    .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + secret)
-                    .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-                    .build()
-                    .post()
-                    .uri("/chat/completions")
-                    .bodyValue(body)
-                    .exchangeToMono(response -> {
-                        if (response.statusCode().is2xxSuccessful()) {
-                            return response.bodyToMono(String.class);
-                        }
-                        return response.releaseBody().then(Mono.error(
-                                new ProviderCallException(
-                                        "GLM_HTTP_" + response.statusCode().value(),
-                                        "GLM request failed with HTTP "
-                                                + response.statusCode().value())));
-                    })
-                    .timeout(Duration.ofSeconds(60))
-                    .block();
+            String responseBody = executeWithRetry(config, secret, body);
 
             JsonNode root = objectMapper.readTree(responseBody);
             JsonNode message = root.path("choices").path(0).path("message");
@@ -164,6 +148,113 @@ public class GlmClient implements ProviderConnectionTestPort {
             throw new ProviderCallException(
                     "GLM_CLIENT_ERROR",
                     "GLM request failed");
+        }
+    }
+
+    /**
+     * 在 Provider 边界执行默认 5 次重试。
+     *
+     * <p>只重试网络/超时、429 和 5xx；鉴权、参数、模型不存在等 4xx 错误
+     * 直接失败，避免重复发送不可恢复请求。</p>
+     *
+     * @param config Provider 配置
+     * @param secret API Key
+     * @param requestBody 请求体
+     * @return Provider 原始响应 JSON
+     */
+    private String executeWithRetry(
+            ProviderConfigStore.ProviderConfig config,
+            String secret,
+            Map<String, Object> requestBody) {
+        RuntimeException lastFailure = null;
+        for (int attempt = 1; attempt <= DEFAULT_MAX_ATTEMPTS; attempt++) {
+            try {
+                return executeOnce(config, secret, requestBody);
+            } catch (ProviderCallException exception) {
+                if (!isRetryableProviderError(exception.code())
+                        || attempt == DEFAULT_MAX_ATTEMPTS) {
+                    throw exception;
+                }
+                lastFailure = exception;
+            } catch (RuntimeException exception) {
+                if (attempt == DEFAULT_MAX_ATTEMPTS) {
+                    throw exception;
+                }
+                lastFailure = exception;
+            }
+            // 外部 Provider 临时失败时退避，避免立即把同一错误打满。
+            sleepBeforeRetry(attempt);
+        }
+        throw lastFailure == null
+                ? new ProviderCallException(
+                        "GLM_CLIENT_ERROR",
+                        "GLM request failed")
+                : lastFailure;
+    }
+
+    /**
+     * 执行单次 GLM HTTP 调用。
+     *
+     * @param config Provider 配置
+     * @param secret API Key
+     * @param requestBody 请求体
+     * @return Provider 原始响应 JSON
+     */
+    private String executeOnce(
+            ProviderConfigStore.ProviderConfig config,
+            String secret,
+            Map<String, Object> requestBody) {
+        return WebClient.builder()
+                .baseUrl(config.baseUrl())
+                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + secret)
+                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                .build()
+                .post()
+                .uri("/chat/completions")
+                .bodyValue(requestBody)
+                .exchangeToMono(response -> {
+                    if (response.statusCode().is2xxSuccessful()) {
+                        return response.bodyToMono(String.class);
+                    }
+                    return response.releaseBody().then(Mono.error(
+                            new ProviderCallException(
+                                    "GLM_HTTP_" + response.statusCode().value(),
+                                    "GLM request failed with HTTP "
+                                            + response.statusCode().value())));
+                })
+                .timeout(REQUEST_TIMEOUT)
+                .block();
+    }
+
+    /**
+     * @param code Provider 稳定错误码
+     * @return 是否适合自动重试
+     */
+    private boolean isRetryableProviderError(String code) {
+        if (code == null || !code.startsWith("GLM_HTTP_")) {
+            return false;
+        }
+        try {
+            int status = Integer.parseInt(code.substring("GLM_HTTP_".length()));
+            return status == 429 || status >= 500;
+        } catch (NumberFormatException exception) {
+            return false;
+        }
+    }
+
+    /**
+     * Provider 重试退避。
+     *
+     * @param attempt 当前失败次数
+     */
+    private void sleepBeforeRetry(int attempt) {
+        try {
+            Thread.sleep(Math.min(1000L * attempt, 5000L));
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new ProviderCallException(
+                    "GLM_RETRY_INTERRUPTED",
+                    "GLM retry was interrupted");
         }
     }
 

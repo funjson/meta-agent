@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -23,6 +24,7 @@ import com.funjson.metaagent.loop.application.RuntimeExecutionService;
 import com.funjson.metaagent.loop.application.RuntimeTransactionService;
 import com.funjson.metaagent.loop.domain.ClarificationNeedDetector;
 import com.funjson.metaagent.loop.domain.ExecutionDerivationPolicy;
+import com.funjson.metaagent.loop.domain.ExecutionDerivationRequest;
 import com.funjson.metaagent.loop.domain.LoopActionResult;
 import com.funjson.metaagent.loop.domain.LoopActionType;
 import com.funjson.metaagent.loop.domain.LoopEvaluation;
@@ -45,6 +47,7 @@ import com.funjson.metaagent.provider.domain.ModelToolCall;
 import com.funjson.metaagent.provider.domain.ModelToolSpec;
 import com.funjson.metaagent.recovery.application.RuntimeLeaseService;
 import com.funjson.metaagent.recovery.domain.LoopNodeResumeContext;
+import com.funjson.metaagent.runtime.application.port.out.TaskIntentScopeStore;
 import com.funjson.metaagent.runtime.domain.ClarificationAnswerOutcome;
 import com.funjson.metaagent.tool.application.ToolExecutionService;
 import com.funjson.metaagent.tool.application.ToolCatalogService;
@@ -84,8 +87,9 @@ class RuntimeExecutionServiceClarificationRecoveryTest {
                 mock(RuntimeLeaseService.class),
                 contextBuilder,
                 tools,
-                toolCatalog);
-        RunExecutionContext context = context();
+                toolCatalog,
+                mock(TaskIntentScopeStore.class));
+        RunExecutionContext context = context("搜索北京天气资料");
         RenderedPrompt prompt = new RenderedPrompt(
                 "loop.execution",
                 "v2",
@@ -104,6 +108,7 @@ class RuntimeExecutionServiceClarificationRecoveryTest {
                 context,
                 "搜索完成",
                 UUID.randomUUID());
+        RunExecutionContext child = childContext(context, 1);
         when(capabilities.prepare(context))
                 .thenReturn(CapabilityPlanningContext.empty());
         when(contextBuilder.build(eq(context), any()))
@@ -137,7 +142,7 @@ class RuntimeExecutionServiceClarificationRecoveryTest {
                                 Map.of("query", "北京天气"))),
                         ""));
         when(tools.invokeForLoop(
-                eq(context),
+                eq(child),
                 any(ToolInvocationCommand.class),
                 eq(LoopActionType.WEB_SEARCH)))
                 .thenReturn(new LoopActionResult(
@@ -145,6 +150,10 @@ class RuntimeExecutionServiceClarificationRecoveryTest {
                         "tool:web",
                         "北京天气搜索结果",
                         Map.of()));
+        when(transactions.spawnChild(
+                eq(context),
+                any(ExecutionDerivationRequest.class),
+                any(LoopExecutionPolicy.class))).thenReturn(child);
         when(transactions.nodeCount(context.loopRunId())).thenReturn(1);
         when(completionPolicy.evaluate(
                 eq(context),
@@ -166,9 +175,278 @@ class RuntimeExecutionServiceClarificationRecoveryTest {
                 .containsExactly("web.search");
         verify(actionPlanner, never()).plan(any(), any(), any());
         verify(tools).invokeForLoop(
-                eq(context),
+                eq(child),
                 any(ToolInvocationCommand.class),
                 eq(LoopActionType.WEB_SEARCH));
+        verify(transactions).completeChildLoopNode(
+                eq(child),
+                any(LoopActionResult.class));
+        verify(transactions).resumeAfterChildExecution(context);
+    }
+
+    @Test
+    void nativeToolCallingExecutesAllToolCallsFromOneModelResponse() {
+        RuntimeTransactionService transactions =
+                mock(RuntimeTransactionService.class);
+        ModelProviderRegistry modelProviders =
+                mock(ModelProviderRegistry.class);
+        PromptRegistry promptRegistry = mock(PromptRegistry.class);
+        ReActActionPlanner actionPlanner = mock(ReActActionPlanner.class);
+        CapabilityApplicationService capabilities =
+                mock(CapabilityApplicationService.class);
+        LoopContextBuilder contextBuilder = mock(LoopContextBuilder.class);
+        ToolExecutionService tools = mock(ToolExecutionService.class);
+        ToolCatalogService toolCatalog = mock(ToolCatalogService.class);
+        LoopCompletionPolicy completionPolicy =
+                mock(LoopCompletionPolicy.class);
+        RuntimeExecutionService service = new RuntimeExecutionService(
+                transactions,
+                modelProviders,
+                promptRegistry,
+                actionPlanner,
+                completionPolicy,
+                new LoopCorrectionPolicy(),
+                new ClarificationNeedDetector(),
+                mock(ExecutionDerivationPolicy.class),
+                capabilities,
+                mock(RuntimeLeaseService.class),
+                contextBuilder,
+                tools,
+                toolCatalog,
+                mock(TaskIntentScopeStore.class));
+        RunExecutionContext context = context("搜索北京天气资料");
+        RenderedPrompt prompt = new RenderedPrompt(
+                "loop.execution",
+                "v2",
+                "system",
+                "user",
+                "hash");
+        ModelProvider provider = mock(ModelProvider.class);
+        RuntimeTransactionService.ExternalActionHandle handle =
+                new RuntimeTransactionService.ExternalActionHandle(
+                        UUID.randomUUID());
+        LoopEvaluation evaluation = new LoopEvaluation(
+                LoopEvaluationDecision.COMPLETE,
+                "批量搜索结果满足目标",
+                "");
+        LoopOutcome expected = LoopOutcome.completed(
+                context,
+                "搜索完成",
+                UUID.randomUUID());
+        RunExecutionContext child1 = childContext(context, 1);
+        RunExecutionContext child2 = childContext(context, 2);
+        when(capabilities.prepare(context))
+                .thenReturn(CapabilityPlanningContext.empty());
+        when(contextBuilder.build(eq(context), any()))
+                .thenReturn(new LoopContextSnapshot(
+                        context.taskRunId(),
+                        context.loopNodeId(),
+                        List.of(),
+                        1024));
+        when(modelProviders.require("fake")).thenReturn(provider);
+        when(provider.supportsNativeToolCalling(anyString())).thenReturn(true);
+        when(toolCatalog.modelToolSpecs()).thenReturn(List.of(
+                new ModelToolSpec(
+                        "web.search",
+                        "web_search",
+                        "搜索网络",
+                        "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}}}")));
+        when(promptRegistry.render(any(), any())).thenReturn(prompt);
+        when(transactions.startExternalAction(context, prompt))
+                .thenReturn(handle);
+        when(provider.generate(any(ModelRequest.class)))
+                .thenReturn(new ModelResponse(
+                        "fake",
+                        "fake-model",
+                        "",
+                        "tool_calls",
+                        List.of(
+                                new ModelToolCall(
+                                        "call-1",
+                                        "web.search",
+                                        "web_search",
+                                        Map.of("query", "java security")),
+                                new ModelToolCall(
+                                        "call-2",
+                                        "web.search",
+                                        "web_search",
+                                        Map.of("query", "java authz"))),
+                        ""));
+        when(tools.invokeForLoop(
+                any(RunExecutionContext.class),
+                any(ToolInvocationCommand.class),
+                eq(LoopActionType.WEB_SEARCH)))
+                .thenReturn(
+                        new LoopActionResult(
+                                LoopActionType.WEB_SEARCH,
+                                "tool:first",
+                                "第一组搜索结果",
+                                Map.of("success", true, "toolId", "web.search")),
+                        new LoopActionResult(
+                                LoopActionType.WEB_SEARCH,
+                                "tool:second",
+                                "第二组搜索结果",
+                                Map.of("success", true, "toolId", "web.search")));
+        when(transactions.spawnChild(
+                eq(context),
+                any(ExecutionDerivationRequest.class),
+                any(LoopExecutionPolicy.class))).thenReturn(child1, child2);
+        when(transactions.nodeCount(context.loopRunId())).thenReturn(1);
+        when(completionPolicy.evaluate(
+                eq(context),
+                any(LoopActionResult.class),
+                any(LoopExecutionPolicy.class),
+                eq(1))).thenReturn(evaluation);
+        when(transactions.complete(
+                eq(context),
+                any(LoopActionResult.class),
+                eq(evaluation))).thenReturn(expected);
+
+        LoopOutcome actual = service.execute(context);
+
+        var resultCaptor = forClass(LoopActionResult.class);
+        verify(tools, times(2)).invokeForLoop(
+                any(RunExecutionContext.class),
+                any(ToolInvocationCommand.class),
+                eq(LoopActionType.WEB_SEARCH));
+        verify(transactions, times(2)).completeChildLoopNode(
+                any(RunExecutionContext.class),
+                any(LoopActionResult.class));
+        verify(transactions).resumeAfterChildExecution(context);
+        verify(completionPolicy).evaluate(
+                eq(context),
+                resultCaptor.capture(),
+                any(LoopExecutionPolicy.class),
+                eq(1));
+        LoopActionResult result = resultCaptor.getValue();
+        assertThat(actual).isSameAs(expected);
+        assertThat(result.actionType()).isEqualTo(LoopActionType.WEB_SEARCH);
+        assertThat(result.attributes())
+                .containsEntry("toolBatch", true)
+                .containsEntry("toolCallCount", 2)
+                .containsEntry("toolId", "web.search");
+        assertThat(result.content())
+                .contains("第一组搜索结果")
+                .contains("第二组搜索结果");
+    }
+
+    @Test
+    void nativeToolObservationIsNeverUpgradedToClarification() {
+        RuntimeTransactionService transactions =
+                mock(RuntimeTransactionService.class);
+        ModelProviderRegistry modelProviders =
+                mock(ModelProviderRegistry.class);
+        PromptRegistry promptRegistry = mock(PromptRegistry.class);
+        ReActActionPlanner actionPlanner = mock(ReActActionPlanner.class);
+        CapabilityApplicationService capabilities =
+                mock(CapabilityApplicationService.class);
+        LoopContextBuilder contextBuilder = mock(LoopContextBuilder.class);
+        ToolExecutionService tools = mock(ToolExecutionService.class);
+        ToolCatalogService toolCatalog = mock(ToolCatalogService.class);
+        LoopCompletionPolicy completionPolicy =
+                mock(LoopCompletionPolicy.class);
+        RuntimeExecutionService service = new RuntimeExecutionService(
+                transactions,
+                modelProviders,
+                promptRegistry,
+                actionPlanner,
+                completionPolicy,
+                new LoopCorrectionPolicy(),
+                new ClarificationNeedDetector(),
+                mock(ExecutionDerivationPolicy.class),
+                capabilities,
+                mock(RuntimeLeaseService.class),
+                contextBuilder,
+                tools,
+                toolCatalog,
+                mock(TaskIntentScopeStore.class));
+        RunExecutionContext context = context();
+        RenderedPrompt prompt = new RenderedPrompt(
+                "loop.execution",
+                "v2",
+                "system",
+                "user",
+                "hash");
+        ModelProvider provider = mock(ModelProvider.class);
+        RuntimeTransactionService.ExternalActionHandle handle =
+                new RuntimeTransactionService.ExternalActionHandle(
+                        UUID.randomUUID());
+        LoopEvaluation evaluation = new LoopEvaluation(
+                LoopEvaluationDecision.COMPLETE,
+                "工具 Observation 已交给 LoopCompletionPolicy 处理",
+                "");
+        LoopOutcome expected = LoopOutcome.completed(
+                context,
+                "已完成",
+                UUID.randomUUID());
+        RunExecutionContext child = childContext(context, 1);
+        when(capabilities.prepare(context))
+                .thenReturn(CapabilityPlanningContext.empty());
+        when(contextBuilder.build(eq(context), any()))
+                .thenReturn(new LoopContextSnapshot(
+                        context.taskRunId(),
+                        context.loopNodeId(),
+                        List.of(),
+                        1024));
+        when(modelProviders.require("fake")).thenReturn(provider);
+        when(provider.supportsNativeToolCalling(anyString())).thenReturn(true);
+        when(toolCatalog.modelToolSpecs()).thenReturn(List.of(
+                new ModelToolSpec(
+                        "web.search",
+                        "web_search",
+                        "搜索网络",
+                        "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}}}")));
+        when(promptRegistry.render(any(), any())).thenReturn(prompt);
+        when(transactions.startExternalAction(context, prompt))
+                .thenReturn(handle);
+        when(provider.generate(any(ModelRequest.class)))
+                .thenReturn(new ModelResponse(
+                        "fake",
+                        "fake-model",
+                        "",
+                        "tool_calls",
+                        List.of(new ModelToolCall(
+                                "call-1",
+                                "web.search",
+                                "web_search",
+                                Map.of("query", "java security"))),
+                        ""));
+        when(tools.invokeForLoop(
+                eq(child),
+                any(ToolInvocationCommand.class),
+                eq(LoopActionType.WEB_SEARCH)))
+                .thenReturn(new LoopActionResult(
+                        LoopActionType.WEB_SEARCH,
+                        "tool:web",
+                        "请补充姓名、角色、用途和背景。",
+                        Map.of("success", true, "toolId", "web.search")));
+        when(transactions.spawnChild(
+                eq(context),
+                any(ExecutionDerivationRequest.class),
+                any(LoopExecutionPolicy.class))).thenReturn(child);
+        when(transactions.nodeCount(context.loopRunId())).thenReturn(1);
+        when(completionPolicy.evaluate(
+                eq(context),
+                any(LoopActionResult.class),
+                any(LoopExecutionPolicy.class),
+                eq(1))).thenReturn(evaluation);
+        when(transactions.complete(
+                eq(context),
+                any(LoopActionResult.class),
+                eq(evaluation))).thenReturn(expected);
+
+        LoopOutcome actual = service.execute(context);
+
+        assertThat(actual).isSameAs(expected);
+        verify(tools, never()).invokeForLoop(
+                eq(context),
+                any(ToolInvocationCommand.class),
+                eq(LoopActionType.CLARIFICATION_REQUEST));
+        verify(completionPolicy).evaluate(
+                eq(context),
+                any(LoopActionResult.class),
+                any(LoopExecutionPolicy.class),
+                eq(1));
     }
 
     @Test
@@ -196,7 +474,8 @@ class RuntimeExecutionServiceClarificationRecoveryTest {
                 mock(RuntimeLeaseService.class),
                 contextBuilder,
                 tools,
-                mock(ToolCatalogService.class));
+                mock(ToolCatalogService.class),
+                mock(TaskIntentScopeStore.class));
         RunExecutionContext context = context();
         UUID requestId = UUID.randomUUID();
         RenderedPrompt prompt = new RenderedPrompt(
@@ -349,11 +628,39 @@ class RuntimeExecutionServiceClarificationRecoveryTest {
                 mock(RuntimeLeaseService.class),
                 mock(LoopContextBuilder.class),
                 mock(ToolExecutionService.class),
-                mock(ToolCatalogService.class));
+                mock(ToolCatalogService.class),
+                mock(TaskIntentScopeStore.class));
+    }
+
+    /** @return 测试用 Child LoopNode 上下文 */
+    private RunExecutionContext childContext(
+            RunExecutionContext parent,
+            int sequence) {
+        return new RunExecutionContext(
+                parent.jobId(),
+                parent.taskId(),
+                parent.taskRunId(),
+                parent.loopRunId(),
+                UUID.randomUUID(),
+                parent.loopNodeId(),
+                parent.depth() + 1,
+                parent.iterationNo() + sequence,
+                parent.loopRunParentType(),
+                parent.loopRunParentId(),
+                parent.recursionDepth(),
+                parent.providerId(),
+                "执行工具调用",
+                "继承父节点模型 tool_call 决策",
+                null);
     }
 
     /** @return 测试用 LoopNode 上下文 */
     private RunExecutionContext context() {
+        return context("生成个人简历");
+    }
+
+    /** @return 测试用 LoopNode 上下文 */
+    private RunExecutionContext context(String goal) {
         UUID taskRunId = UUID.randomUUID();
         return new RunExecutionContext(
                 UUID.randomUUID(),
@@ -368,7 +675,7 @@ class RuntimeExecutionServiceClarificationRecoveryTest {
                 taskRunId,
                 0,
                 "fake",
-                "生成个人简历",
+                goal,
                 "",
                 null);
     }

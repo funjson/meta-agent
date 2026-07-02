@@ -63,3 +63,4 @@
 | 2026-06-27 | clarification-context-tool-repair-r6 | 新增 Clarification/Context/Tool，Intent 去直接回复，Control 异步提交，RecoveryWorker，V15 与 59 项测试通过 |
 | 2026-06-28 | clarification-contract-r10 | 澄清合同 contract_json、用户可见问题、默认授权收窄、EXPLAIN_PENDING_REQUIREMENTS 与混合意图边界 |
 | 2026-06-28 | runtime-clarification-contract-r11 | Loop 自然语言澄清升级时生成运行时合同，clarification.request 持久化 contractJson，默认/没有了可收口可默认字段 |
+| 2026-07-01 | mixed-intent-scope-r18 | 混合意图节点创建独立 Job，TaskIntentScope 固化到 Job 策略快照，Context/Tool/Clarification 按 Job 作用域隔离 |

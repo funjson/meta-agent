@@ -27,7 +27,8 @@ JSON 字段：
 - clarificationQuestion: string，仅当 requiresClarification=true 时填写；必须是直接给用户看的自然问题，不要使用“用户要求/判定/缺失”等审计口吻
 - clarificationContract: object，仅当 requiresClarification=true 时填写；系统用，不给用户看
   - version: "v1"
-  - slots: array，每项包含 key、label、required、defaultable、aliases
+  - slots: array，每项包含 key、label、required、requiredLevel、defaultable、aliases
+  - requiredLevel: BLOCKING | SOFT | OPTIONAL
   - defaultConsentPhrases: string[]，例如“默认即可”“你看着办”“其他随意”“按通用模板”
 
 规则：
@@ -56,7 +57,12 @@ JSON 字段：
    - 如果用户明确要求“通用模板/你自由发挥/默认即可”，可以不澄清。
    - 不要针对具体场景硬编码；用“是否缺少会改变结果的关键输入”判断。
 10. clarificationQuestion 应像正常助手对用户说话，例如“可以，我需要知道你是谁、用在什么场合，以及想正式一点还是轻松一点；如果你想让我按通用模板先写，也可以说默认即可。”。
-11. clarificationContract 中 required=true 表示必须判断；defaultable=true 表示用户说“随意/默认/你看着办”时可以由系统默认补齐。
+11. clarificationContract 中 required=true 表示必须判断；requiredLevel 表示缺失时对恢复执行的阻塞强度：
+   - BLOCKING：缺失会导致错误执行、越权、调用错误工具/接口或产生高风险结果，必须继续澄清。
+   - SOFT：缺失会影响质量但可以在用户明确“默认/随意/就这些吧/你看着办”时用默认假设推进。
+   - OPTIONAL：只影响偏好或锦上添花，不阻塞恢复。
+   defaultable=true 只用于 SOFT/OPTIONAL；工具调用、后端接口、文件写入、外部副作用、权限、成本、删除、发送、提交等关键参数必须 BLOCKING 且 defaultable=false。
+   低风险生成类任务（个人介绍、文案、普通总结）通常只有目标对象/核心输入是 BLOCKING，用途、风格、长度等偏好应优先 SOFT。
 12. 不要把 `needs-web`、`needs-file-context`、`needs-rag` 当成互斥分类；一个任务可以同时需要多个信息源。
 13. 如果需要外部事实但不确定具体工具，优先打软标签和约束，不要编造已搜索到的信息。
 14. 解释“今天、现在、当前、最新、近期、今年”等相对时间时，必须使用用户 Prompt 中的当前时间上下文；不得凭空引入其他年份。

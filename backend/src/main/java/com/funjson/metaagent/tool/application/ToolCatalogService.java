@@ -64,14 +64,14 @@ public class ToolCatalogService {
             new ToolDefinition(
                     "web.fetch",
                     ToolType.RETRIEVAL,
-                    "打开一个公开 http/https URL，抽取标题、正文、来源类型和内容哈希。用于读取 web.search 返回的候选页面。",
+                    "打开一个公开 http/https URL，抽取标题、正文、来源类型和内容哈希。只能读取 web.search 返回的具体候选来源页面；不要读取 Google/Bing/Baidu 等搜索结果页。",
                     "{\"type\":\"object\",\"required\":[\"url\"],\"properties\":{\"url\":{\"type\":\"string\"},\"maxChars\":{\"type\":\"integer\"}}}",
                     List.of("web:read"),
                     true),
             new ToolDefinition(
                     "web.extract",
                     ToolType.RETRIEVAL,
-                    "打开一个公开 URL 并按 query 抽取可引用证据片段。用于需要引用、事实核验或研究报告的回答。",
+                    "打开一个公开 URL 并按 query 抽取可引用证据片段。只能读取具体来源页面，不能读取搜索结果页；用于需要引用、事实核验或研究报告的回答。",
                     "{\"type\":\"object\",\"required\":[\"url\"],\"properties\":{\"url\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"},\"maxEvidence\":{\"type\":\"integer\"}}}",
                     List.of("web:read"),
                     true),
@@ -147,6 +147,30 @@ public class ToolCatalogService {
                         tool.description()))
                 .reduce((left, right) -> left + "\n" + right)
                 .orElse("无可用工具");
+    }
+
+    /**
+     * Generates a prompt summary for an explicit task-level allowlist.
+     *
+     * @param allowedToolIds allowed framework tool IDs
+     * @return filtered prompt summary
+     */
+    public String promptSummary(List<String> allowedToolIds) {
+        if (allowedToolIds == null || allowedToolIds.isEmpty()) {
+            return "当前任务未授权使用工具";
+        }
+        java.util.Set<String> allowed = allowedToolIds.stream()
+                .filter(value -> value != null && !value.isBlank())
+                .map(String::trim)
+                .collect(java.util.stream.Collectors.toSet());
+        return listAllTools().stream()
+                .filter(tool -> allowed.contains(tool.name()))
+                .map(tool -> "- %s (%s): %s".formatted(
+                        tool.name(),
+                        tool.type(),
+                        tool.description()))
+                .reduce((left, right) -> left + "\n" + right)
+                .orElse("当前任务未授权使用工具");
     }
 
     /**

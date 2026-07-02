@@ -35,3 +35,4 @@ JSON 字段：
 8. userFacingMessage 是给用户看的自然语言；facts、auditSummary、answerSummary 是系统用的，不要把 JSON 暴露给用户。
 9. 如果用户说“你希望我补充哪些内容 / 还缺什么 / 要补什么”，且只有一个等待候选，输出 EXPLAIN_PENDING_REQUIREMENTS，不要输出 AMBIGUOUS。
 10. 如果用户说“随意 / 都行 / 你看着办 / 其他随意 / 默认即可 / 没有了 / 不补充了 / 就这样”，facts 中写入 userAcceptedDefaults: "true"。
+11. 如果消息同时包含补充信息和新任务，例如“我叫张三，哦对了再帮我查天气”，answerText 只写补充信息片段，新任务片段不要写入 answerText。

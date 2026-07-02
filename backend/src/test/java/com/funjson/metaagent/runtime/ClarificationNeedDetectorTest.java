@@ -45,4 +45,28 @@ class ClarificationNeedDetectorTest {
 
         assertThat(detector.requiresClarification(content)).isFalse();
     }
+
+    @Test
+    void detectsMissingWeatherLocationAsClarification() {
+        String content = "请告诉我您要查询哪个城市或地区的天气？";
+
+        assertThat(detector.requiresClarification(content)).isTrue();
+    }
+
+    @Test
+    void doesNotTreatWeatherResultWithOptionalResumeReminderAsClarification() {
+        String content = """
+                北京今天的天气如下：
+
+                | 时间 | 天气 | 气温 |
+                | --- | --- | --- |
+                | 今天白天 | 多云 | 28℃ |
+
+                体感整体比较舒适，出门建议带伞。
+                另外，关于您之前提到的个人简历，如果还需要我帮您制作，
+                请随时提供姓名、经历和岗位方向。
+                """;
+
+        assertThat(detector.requiresClarification(content)).isFalse();
+    }
 }

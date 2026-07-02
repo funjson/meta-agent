@@ -92,12 +92,20 @@ public class PendingInteractionCompletionPolicy {
         boolean acceptedDefaults = hasTruthyValue(
                 mergedFacts,
                 "userAcceptedDefaults");
+        boolean generationDefaultsAllowed = acceptedDefaults
+                && looksLikeGenerationClarification(
+                        question,
+                        blockingSummary,
+                        contractSlots);
 
         if (!contractSlots.isEmpty()) {
             for (SlotRequirement slot : contractSlots) {
-                if (slot.required()
+                if (slot.blocksResume()
                         && !slotSatisfied(slot, mergedFacts)
-                        && !(slot.defaultable() && acceptedDefaults)) {
+                        && !slotSatisfiedByDefaultConsent(
+                                slot,
+                                acceptedDefaults,
+                                generationDefaultsAllowed)) {
                     missing.add(slot.key());
                 }
             }
@@ -114,6 +122,7 @@ public class PendingInteractionCompletionPolicy {
                     mergedFacts,
                     contractSlots,
                     acceptedDefaults,
+                    generationDefaultsAllowed,
                     requiredSlots,
                     missing);
         }
@@ -197,6 +206,7 @@ public class PendingInteractionCompletionPolicy {
             Map<String, String> facts,
             List<SlotRequirement> contractSlots,
             boolean acceptedDefaults,
+            boolean generationDefaultsAllowed,
             Set<Slot> requiredSlots,
             List<String> missing) {
         if (field == null || field.isBlank()) {
@@ -211,9 +221,12 @@ public class PendingInteractionCompletionPolicy {
                 normalized,
                 contractSlots);
         if (requirement != null) {
-            if (requirement.required()
+            if (requirement.blocksResume()
                     && !slotSatisfied(requirement, facts)
-                    && !(requirement.defaultable() && acceptedDefaults)) {
+                    && !slotSatisfiedByDefaultConsent(
+                            requirement,
+                            acceptedDefaults,
+                            generationDefaultsAllowed)) {
                 missing.add(requirement.key());
             }
             return;
@@ -274,6 +287,7 @@ public class PendingInteractionCompletionPolicy {
                         key,
                         slot.path("required").asBoolean(false),
                         slot.path("defaultable").asBoolean(false),
+                        requiredLevel(slot),
                         parseAliases(slot)));
             }
             return List.copyOf(result);
@@ -415,6 +429,125 @@ public class PendingInteractionCompletionPolicy {
                         && !entry.getValue().isBlank());
     }
 
+    /**
+     * 判断缺失槽位是否可由用户明确的“按默认处理”授权补齐。
+     *
+     * <p>默认授权只对软阻塞或显式 defaultable 的字段生效；硬阻塞字段仍必须由用户
+     * 明确提供。这保证个人介绍这类低风险生成任务可以自然推进，同时不会放松工具调用、
+     * 接口写入或授权类任务的关键参数要求。</p>
+     */
+    private boolean slotSatisfiedByDefaultConsent(
+            SlotRequirement slot,
+            boolean acceptedDefaults,
+            boolean generationDefaultsAllowed) {
+        return acceptedDefaults
+                && ((slot.defaultable()
+                        && slot.requiredLevel() != RequirementLevel.BLOCKING)
+                        || (generationDefaultsAllowed
+                        && isGenerationDefaultableSlot(slot)));
+    }
+
+    /**
+     * 判断当前澄清是否属于低风险文本生成场景。
+     */
+    private boolean looksLikeGenerationClarification(
+            String question,
+            String blockingSummary,
+            List<SlotRequirement> contractSlots) {
+        String contractText = contractSlots.stream()
+                .map(slot -> slot.key() + " " + String.join(" ", slot.aliases()))
+                .reduce((left, right) -> left + " " + right)
+                .orElse("");
+        String text = normalize(question + " " + blockingSummary + " "
+                + contractText);
+        return containsAny(
+                text,
+                "简历",
+                "个人介绍",
+                "自我介绍",
+                "介绍",
+                "文案",
+                "resume",
+                "cv",
+                "profile",
+                "introduction",
+                "copywriting");
+    }
+
+    /**
+     * 判断硬合同槽位是否可在低风险生成场景由用户默认授权兜底。
+     */
+    private boolean isGenerationDefaultableSlot(SlotRequirement slot) {
+        String text = normalize(slot.key() + " " + String.join(" ", slot.aliases()));
+        if (containsAny(
+                text,
+                "name",
+                "username",
+                "fullname",
+                "姓名",
+                "名字",
+                "称呼")) {
+            return false;
+        }
+        return containsAny(
+                text,
+                "purpose",
+                "usecase",
+                "scenario",
+                "context",
+                "用途",
+                "场景",
+                "目的",
+                "background",
+                "identity",
+                "role",
+                "occupation",
+                "profession",
+                "背景",
+                "身份",
+                "职业",
+                "岗位",
+                "经验",
+                "experience",
+                "workexperience",
+                "work_experience",
+                "工作经历",
+                "工作经验",
+                "education",
+                "school",
+                "major",
+                "degree",
+                "教育背景",
+                "学历",
+                "学校",
+                "专业",
+                "contact",
+                "phone",
+                "mobile",
+                "email",
+                "联系方式",
+                "电话",
+                "邮箱",
+                "targetposition",
+                "target_position",
+                "jobtarget",
+                "job_target",
+                "求职意向",
+                "目标职位",
+                "应聘职位",
+                "skills",
+                "技能",
+                "证书",
+                "style",
+                "tone",
+                "风格",
+                "语气",
+                "length",
+                "wordcount",
+                "长度",
+                "字数");
+    }
+
     /** 判断布尔型事实是否表达了用户确认。 */
     private boolean hasTruthyValue(
             Map<String, String> facts,
@@ -510,16 +643,56 @@ public class PendingInteractionCompletionPolicy {
         }
     }
 
+    /** 解析合同中的阻塞等级。 */
+    private RequirementLevel requiredLevel(JsonNode slot) {
+        String raw = slot.path("requiredLevel").asText("").trim();
+        if (!raw.isBlank()) {
+            try {
+                return RequirementLevel.valueOf(
+                        raw.toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                // 非法等级按旧合同字段兜底，避免模型拼写错误直接破坏恢复流程。
+            }
+        }
+        boolean required = slot.path("required").asBoolean(false);
+        boolean defaultable = slot.path("defaultable").asBoolean(false);
+        if (!required) {
+            return RequirementLevel.OPTIONAL;
+        }
+        return defaultable
+                ? RequirementLevel.SOFT
+                : RequirementLevel.BLOCKING;
+    }
+
+    /** 澄清槽位对恢复执行的阻塞强度。 */
+    private enum RequirementLevel {
+        /** 缺失时必须继续澄清，不能由用户笼统默认授权绕过。 */
+        BLOCKING,
+        /** 缺失时建议澄清；用户明确接受默认值后可以恢复。 */
+        SOFT,
+        /** 只作为质量偏好，不阻塞恢复。 */
+        OPTIONAL
+    }
+
     /** 合同定义的槽位要求。 */
     private record SlotRequirement(
             String key,
             boolean required,
             boolean defaultable,
+            RequirementLevel requiredLevel,
             List<String> aliases) {
 
         /** 复制别名集合。 */
         private SlotRequirement {
+            requiredLevel = requiredLevel == null
+                    ? RequirementLevel.BLOCKING
+                    : requiredLevel;
             aliases = aliases == null ? List.of() : List.copyOf(aliases);
+        }
+
+        /** @return 缺失该槽位时是否应阻塞恢复 */
+        private boolean blocksResume() {
+            return required && requiredLevel != RequirementLevel.OPTIONAL;
         }
     }
 }

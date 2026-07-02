@@ -59,6 +59,14 @@ public class LoopCorrectionPolicy {
                     || !candidate.startsWith("web.");
         }
         if ("web.fetch".equals(lastToolId)) {
+            if (lastToolFailed(context.feedback())) {
+                // 读取某个来源失败时，允许模型换一个明确不同的来源继续读取；
+                // 真正的搜索结果页和私网 URL 仍由 WebAccessPolicy 拦截。
+                return "web.search".equals(candidate)
+                        || "web.fetch".equals(candidate)
+                        || "web.extract".equals(candidate)
+                        || !candidate.startsWith("web.");
+            }
             // 已读完整来源后只允许进一步抽取证据；再次搜索/读取容易形成循环。
             return "web.extract".equals(candidate)
                     || !candidate.startsWith("web.");
@@ -131,6 +139,14 @@ public class LoopCorrectionPolicy {
             return "rag.query";
         }
         return "";
+    }
+
+    /**
+     * @return true when evaluator feedback says the previous tool failed.
+     */
+    private boolean lastToolFailed(String feedback) {
+        return feedback != null
+                && feedback.contains("toolSuccess=false");
     }
 
     /**

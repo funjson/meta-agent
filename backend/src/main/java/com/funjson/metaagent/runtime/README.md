@@ -35,3 +35,9 @@ Runtime 不依赖任何业务上层模块。
 
 扩展成本预算、数据边界和授权策略；入口为 `PolicyResolverTest` 与 ArchUnit。
 
+## r18 TaskIntentScope
+
+- `TaskIntentScope` 是混合意图拆分后的任务级运行边界，属于 Runtime 中立合同。
+- Job 创建时将 `TurnIntentNode` 的任务类型、原始片段、规范目标、澄清合同和工具 allowlist
+  固化为 `job.effective_policy_snapshot.intentScope`。
+- Loop/Context/Tool 只能读取该快照，不能反向依赖 Intent 或 Control。

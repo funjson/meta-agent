@@ -224,7 +224,7 @@ public class PendingInteractionRouter {
             facts.put("noSpecialRequirements", "true");
         }
         if (lower.contains("默认") || lower.contains("通用")
-                || value.matches(".*(随意|都行|看着办|你决定|无所谓|随便|其他的随意|其他随意|没有了|没了|没有其他|不用补充|不补充了|先这样|就这样).*")) {
+                || value.matches(".*(随意|都行|看着办|你决定|无所谓|随便|其他的随意|其他随意|没有了|没了|没有其他|不用补充|不补充了|先这样|就这样|就这些|就这些吧).*")) {
             facts.put("userAcceptedDefaults", "true");
         }
         return new PendingInteractionFacts(

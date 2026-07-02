@@ -115,7 +115,8 @@ public class ChildJobCoordinator {
                         : request.subagentProfileRef().id(),
                 request.subagentProfileRef() == null
                         ? null
-                        : request.subagentProfileRef().version());
+                        : request.subagentProfileRef().version(),
+                "{\"version\":\"v1\",\"origin\":\"child-job\"}");
         JobView child = jobService.create(
                 "child-job:" + request.idempotencyKey(),
                 new CreateJobRequest(

@@ -2,11 +2,14 @@ package com.funjson.metaagent.runtime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.Map;
 import java.util.UUID;
 
+import com.funjson.metaagent.loop.domain.ClarificationNeedDetector;
 import com.funjson.metaagent.loop.domain.LoopActionResult;
 import com.funjson.metaagent.loop.domain.LoopActionType;
-import com.funjson.metaagent.loop.domain.ClarificationNeedDetector;
+import com.funjson.metaagent.loop.domain.LoopCompletionJudge;
+import com.funjson.metaagent.loop.domain.LoopCompletionJudgment;
 import com.funjson.metaagent.loop.domain.LoopEvaluationDecision;
 import com.funjson.metaagent.loop.domain.LoopEvaluator;
 import com.funjson.metaagent.loop.domain.LoopExecutionPolicy;
@@ -15,18 +18,19 @@ import com.funjson.metaagent.loop.domain.RunExecutionContext;
 import org.junit.jupiter.api.Test;
 
 /**
- * 验证 Loop Evaluation 的完成、调整和预算失败决策。
+ * Verifies Loop evaluation completion, adjustment and budget-exhaustion decisions.
  */
 class LoopEvaluatorTest {
 
-    private final LoopEvaluator evaluator =
-            new LoopEvaluator(new ClarificationNeedDetector());
+    private final LoopEvaluator evaluator = new LoopEvaluator(
+            new ClarificationNeedDetector(),
+            LoopCompletionJudge.noOp());
 
     @Test
     void completesWhenProviderReturnsUserFacingContent() {
         var evaluation = evaluator.evaluate(
                 context(0, 1),
-                actionResult("done"),
+                actionResult("这是给用户看的最终结果。"),
                 LoopExecutionPolicy.baseline(),
                 1);
 
@@ -44,7 +48,7 @@ class LoopEvaluatorTest {
 
         assertThat(evaluation.decision())
                 .isEqualTo(LoopEvaluationDecision.ADJUST);
-        assertThat(evaluation.summary()).contains("重新执行模型动作");
+        assertThat(evaluation.summary()).contains("澄清回答");
         assertThat(evaluation.feedback()).contains("最终结果");
     }
 
@@ -56,7 +60,7 @@ class LoopEvaluatorTest {
                         LoopActionType.FILE_SEARCH,
                         "tool:test",
                         "找到 3 个候选文件",
-                        java.util.Map.of()),
+                        Map.of()),
                 LoopExecutionPolicy.baseline(),
                 1);
 
@@ -83,7 +87,7 @@ class LoopEvaluatorTest {
     void doesNotCompleteWhenModelNaturallyAsksForMoreDetails() {
         var evaluation = evaluator.evaluate(
                 context(0, 1),
-                actionResult("光有名字还不够，我还需要了解用途、背景、风格和长度。请你补充一下。"),
+                actionResult("只有名字还不太够，我还需要了解用途、背景、风格和长度。请你补充一下。"),
                 LoopExecutionPolicy.baseline(),
                 1);
 
@@ -109,7 +113,7 @@ class LoopEvaluatorTest {
     void doesNotCompleteWhenModelPromisesAnotherSearch() {
         var evaluation = evaluator.evaluate(
                 context(0, 1),
-                actionResult("刚才没查到准确结果，让我重新搜索一下北京天气。"),
+                actionResult("要完成一份有质量的报告，我需要重新搜集资料。让我并行进行多维度搜索。"),
                 LoopExecutionPolicy.baseline(),
                 1);
 
@@ -139,7 +143,7 @@ class LoopEvaluatorTest {
                         LoopActionType.MODEL_CALL,
                         "fake/fake-deterministic-v1",
                         "#### 4.1",
-                        java.util.Map.of("finishReason", "length")),
+                        Map.of("finishReason", "length")),
                 LoopExecutionPolicy.baseline(),
                 1);
 
@@ -147,6 +151,65 @@ class LoopEvaluatorTest {
                 .isEqualTo(LoopEvaluationDecision.ADJUST);
         assertThat(evaluation.summary()).contains("max_tokens");
         assertThat(evaluation.feedback()).contains("完整");
+    }
+
+    @Test
+    void adjustsWhenProviderRequestsToolCallsButNoToolCallIsParsed() {
+        var evaluation = evaluator.evaluate(
+                context(0, 1),
+                new LoopActionResult(
+                        LoopActionType.MODEL_CALL,
+                        "deepseek/deepseek-chat",
+                        "让我并行进行多维度搜索。",
+                        Map.of(
+                                "finishReason", "tool_calls",
+                                "toolCallCount", 0)),
+                LoopExecutionPolicy.baseline(),
+                1);
+
+        assertThat(evaluation.decision())
+                .isEqualTo(LoopEvaluationDecision.ADJUST);
+        assertThat(evaluation.summary()).contains("tool_calls");
+        assertThat(evaluation.feedback()).contains("合法的工具调用");
+    }
+
+    @Test
+    void modelJudgeCanRejectProcessTextBeforeRuleFallback() {
+        LoopEvaluator judgedEvaluator = new LoopEvaluator(
+                new ClarificationNeedDetector(),
+                (context, actionResult, policy, currentNodeCount) ->
+                        LoopCompletionJudgment.needMoreAction(
+                                "候选内容只是执行计划",
+                                "请继续执行必要动作，而不是输出过程说明。"));
+
+        var evaluation = judgedEvaluator.evaluate(
+                context(0, 1),
+                actionResult("看起来像普通文本，但 Judge 认为它还不是最终交付物。"),
+                LoopExecutionPolicy.baseline(),
+                1);
+
+        assertThat(evaluation.decision())
+                .isEqualTo(LoopEvaluationDecision.ADJUST);
+        assertThat(evaluation.summary()).contains("执行计划");
+        assertThat(evaluation.feedback()).contains("继续执行必要动作");
+    }
+
+    @Test
+    void modelJudgeCanApproveCompletionBeforeRuleFallback() {
+        LoopEvaluator judgedEvaluator = new LoopEvaluator(
+                new ClarificationNeedDetector(),
+                (context, actionResult, policy, currentNodeCount) ->
+                        LoopCompletionJudgment.complete("Judge approved"));
+
+        var evaluation = judgedEvaluator.evaluate(
+                context(0, 1),
+                actionResult("LoopNode Observation"),
+                LoopExecutionPolicy.baseline(),
+                1);
+
+        assertThat(evaluation.decision())
+                .isEqualTo(LoopEvaluationDecision.COMPLETE);
+        assertThat(evaluation.summary()).contains("Judge approved");
     }
 
     @Test
@@ -162,11 +225,7 @@ class LoopEvaluatorTest {
     }
 
     /**
-     * 创建测试节点上下文。
-     *
-     * @param depth 深度
-     * @param iterationNo 迭代号
-     * @return 上下文
+     * Creates a test LoopNode context.
      */
     private RunExecutionContext context(
             int depth,
@@ -190,30 +249,24 @@ class LoopEvaluatorTest {
     }
 
     /**
-     * 创建测试动作结果。
-     *
-     * @param content 内容
-     * @return 动作结果
+     * Creates a model action result.
      */
     private LoopActionResult actionResult(String content) {
         return new LoopActionResult(
                 LoopActionType.MODEL_CALL,
                 "fake/fake-deterministic-v1",
                 content,
-                java.util.Map.of());
+                Map.of());
     }
 
     /**
-     * 创建澄清回答动作结果。
-     *
-     * @param content 用户澄清回答
-     * @return 动作结果
+     * Creates a clarification action result.
      */
     private LoopActionResult clarificationResult(String content) {
         return new LoopActionResult(
                 LoopActionType.CLARIFICATION_REQUEST,
                 "clarification:test",
                 content,
-                java.util.Map.of("clarificationRequestId", UUID.randomUUID()));
+                Map.of("clarificationRequestId", UUID.randomUUID()));
     }
 }

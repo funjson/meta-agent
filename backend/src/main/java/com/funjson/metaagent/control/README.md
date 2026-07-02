@@ -2,9 +2,11 @@
 
 ## 职责与非职责
 
-- 负责 ControlTurn、ControlDecision、聊天轮次路由、控制命令和用户状态反馈。
-- Control 是控制平面；不存在名为 `Control` 的聚合对象。
-- 不拥有 Conversation/Message，不执行 TaskGraph 内部调度或 Loop 动作。
+- 负责 ControlTurn、ControlDecision、聊天轮次路由、控制命令、用户状态反馈和后台派发。
+- 消费 Intent 输出的 `TurnIntentGraph`，编译成 `ControlExecutionPlan` 后执行。
+- 可以创建 Job、恢复 Clarification、写入 conversation fact、提交后台 dispatch。
+- 不拥有 Conversation/Message，不执行 TaskGraph 内部调度，不执行 Loop 动作。
+- 不解析自然语言；自然语言理解属于 Intent。
 
 ## 类图
 
@@ -13,16 +15,16 @@ classDiagram
   ConversationMessageController --> ControlKernel
   ControlKernel --> ControlTurnInitializer
   ControlKernel --> ControlJobWorker
-  ControlKernel --> ControlUserResponseRenderer
-  ControlTurnInitializer --> ControlTurnStore
-  ControlTurnInitializer --> TurnRouter
-  TurnRouter --> PendingInteractionRouter
-  TurnRouter --> IntentRecognitionService
   ControlTurnInitializer --> ContextAssembler
+  ControlTurnInitializer --> TurnRouter
   ControlTurnInitializer --> ControlActionExecutor
+  ControlActionExecutor --> ControlTurnGraphCompiler
+  ControlTurnGraphCompiler --> ControlExecutionPlan
+  ControlExecutionPlan --> ControlExecutionNode
+  ControlExecutionPlan --> ControlExecutionEdge
   ControlActionExecutor --> ControlJobInitializationService
+  ControlActionExecutor --> ClarificationService
   ControlActionExecutor --> ConversationFactService
-  ControlTurnInitializer --> ClarificationService
   ControlJobInitializationService --> JobService
   ControlJobInitializationService --> TaskGraphPlanner
   ControlJobInitializationService --> TaskGraphTemplateService
@@ -30,36 +32,83 @@ classDiagram
 
 ## 核心流程
 
-用户 Message → 创建 ControlTurn → ContextEnvelope → TurnRouter
-→ TurnRoutingPlan → ControlActionExecutor
-→ 可选 Job 初始化 / Clarification 恢复 / ConversationFact 写入
-→ ControlTurn 完成 → 后台 Worker 执行 Job。
+```text
+User Message
+  -> ControlTurnInitializer
+  -> ContextEnvelope
+  -> TurnRouter
+  -> TurnRoutingPlan(TurnIntentGraph)
+  -> ControlTurnGraphCompiler
+  -> ControlExecutionPlan
+  -> ControlActionExecutor
+      -> ANSWER_PENDING: 记录 facts / 判断合同 / 恢复等待点
+      -> CREATE_JOB: 使用 JobInitializationSpec 创建根 Job
+      -> DISAMBIGUATION: 输出用户可见消歧问题
+      -> CONTROL_COMMAND: 输出控制反馈
+  -> ControlDecision
+  -> ControlDispatchCommand
+  -> ControlJobWorker
+```
 
-`TurnRoutingPlan` 可以包含多条动作。例如用户先回答一个等待澄清，又顺手提出新目标时，
-Control 会在同一轮持久化结构化事实、恢复原等待点，并创建新的 Job 派发命令。当前混合意图
-只做保守入口，不处理复杂“回答 + 修改 + 取消 + 新任务”组合；这些会继续留给 Router 模型化。
+## 混合意图编排
 
-Control 不再把 `JOB_ACCEPTED` 这类内部调度状态写入聊天消息。用户可见消息只包括自然回复、澄清问题、消歧问题和失败提示。
+Control 不再按线性 action 列表猜“某个澄清未完成后还能不能继续”。现在的规则是：
 
-当 Router 识别为澄清回答时，Control 只负责把结构化 facts 与回答绑定回原恢复点；
-是否继续执行、如何验收和如何产出最终回复仍由 Job/Task/Loop 后续阶段负责。
+```text
+TurnIntentGraph edge 决定阻塞传播
+```
+
+- 某节点进入澄清/等待，只会阻塞依赖它的下游节点。
+- 没有依赖关系的兄弟节点可以继续执行。
+- 消歧和无目标澄清属于全局保护，会停止本轮后续执行。
+
+示例：
+
+```text
+用户：我叫冯建松，顺便查北京天气
+
+node-1 ANSWER_PENDING  -> 个人介绍任务补充姓名
+node-2 NEW_JOB         -> 北京天气查询
+edge: none
+
+结果：node-1 如果仍缺用途/风格，可以继续等待；node-2 仍然会创建天气 Job。
+```
+
+依赖示例：
+
+```text
+用户：查北京天气，然后根据天气写出门建议
+
+node-1 NEW_JOB / WEATHER_QUERY
+node-2 NEW_JOB / TEXT_GENERATION
+edge: node-1 -> node-2 DEPENDS_ON_RESULT
+
+结果：node-1 未完成前，node-2 不执行。
+```
 
 ## 类与功能关系
 
-- `ControlKernel`：一轮控制处理的应用门面。
-- `ControlTurnInitializer`：短事务创建 Message、ControlTurn，并把路由计划交给执行器。
-- `ControlActionExecutor`：执行 `TurnRoutingPlan`，统一创建 Job、恢复等待点、写入结构化事实和生成派发命令。
-- `ControlDispatchCommand`：Control 事务提交后交给 Worker 的后台执行请求。
-- `ControlJobInitializationService`：从意图结果创建根 Job，负责 Provider 解析、TaskGraphTemplate 匹配、动态规划和 TaskGraph 级澄清注册。
-- `ControlUserResponseRenderer`：把 Control-only 决策转换为聊天室可见消息，避免把审计摘要或内部命令 ACK 直接暴露给用户。
-- `ControlJobWorker`：v0.1 本机后台 Worker，异步执行 Job；完成时写回用户可见结果，WAITING_HUMAN 时写回正式澄清问题，并定时 replay 已创建但未启动的 Job。
-- `ControlTurnStore`：ControlTurn/ControlDecision 的唯一写入端口。
+- `ControlTurnInitializer`：短事务入口，写入用户消息和 ControlTurn，组装上下文并调用 TurnRouter。
+- `ControlTurnGraphCompiler`：把 Intent 的语义图机械编译成 Control 可执行计划。
+- `ControlExecutionPlan`：Control 本轮执行节点和依赖边。
+- `ControlActionExecutor`：执行节点，统一处理 Job 创建、澄清恢复、facts 写入和 dispatch。
+- `JobInitializationSpec`：从一个 `TurnIntentNode` 编译来的 Job 初始化输入，隔离 nodeId、taskType、canonicalGoal、labels/risk/contract。
+- `ControlJobInitializationService`：Provider 解析、TaskGraphTemplate 匹配、动态 TaskGraph 规划、TaskGraph 澄清注册。
+- `ControlUserResponseRenderer`：用户可见 Control 消息渲染边界。
+- `ControlJobWorker`：事务提交后的后台 Job/Task 执行入口。
 
 ## 所有权和允许依赖
 
-允许依赖 Conversation、Intent、Job、Clarification 和 Runtime。下层禁止反向依赖 Control。
+- Control 可以依赖 Conversation、Intent、Clarification、Job、Runtime。
+- Job/Task/Loop 禁止反向依赖 Control。
+- Control 只编排 Job 之前和 Job 提交之后的控制边界，不进入 Loop Kernel 内部执行。
 
 ## 扩展点与测试入口
 
-可扩展暂停、恢复、取消和多轮澄清命令；测试入口为幂等 ControlTurn、事务回滚和 ArchUnit。
- 
+- 扩展执行节点：`ControlActionExecutor` 中新增 action 分支。
+- 扩展依赖执行语义：`ControlExecutionRelationType` 和 `ControlExecutionPlan.blockedByUpstream`。
+- 扩展 Job 初始化策略：`JobInitializationSpec` 与 `ControlJobInitializationService`。
+- 测试入口：
+  - `ControlActionExecutorTest`
+  - `ControlJobInitializationServiceTest`
+  - `LayerDependencyTest`

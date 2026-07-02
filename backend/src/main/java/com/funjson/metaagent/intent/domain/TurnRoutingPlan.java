@@ -1,34 +1,44 @@
 package com.funjson.metaagent.intent.domain;
 
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * Structured routing plan for one user message.
  *
  * <p>The plan sits above Job/TaskGraph/Loop. It describes what the Control
- * layer should do with this user turn before any new execution Job is started.</p>
+ * layer should do with this user turn before any new execution Job is started.
+ * Its primary contract is a {@link TurnIntentGraph}; the action-list view is
+ * retained for existing execution code and tests.</p>
  *
- * @param actions ordered Control actions
+ * @param graph turn-level semantic orchestration graph
  * @param auditSummary auditable summary of the full routing decision
  */
 public record TurnRoutingPlan(
-        List<TurnAction> actions,
+        TurnIntentGraph graph,
         String auditSummary) {
 
     /**
-     * Copies actions and derives an audit summary when absent.
+     * Creates a plan from a legacy action list.
+     *
+     * @param actions ordered Control actions
+     * @param auditSummary auditable summary of the full routing decision
+     */
+    public TurnRoutingPlan(
+            List<TurnAction> actions,
+            String auditSummary) {
+        this(TurnIntentGraph.fromActions(actions, auditSummary), auditSummary);
+    }
+
+    /**
+     * Normalizes graph and summary.
      */
     public TurnRoutingPlan {
-        actions = actions == null ? List.of() : List.copyOf(actions);
-        if (actions.isEmpty()) {
+        if (graph == null) {
             throw new IllegalArgumentException(
-                    "TurnRoutingPlan requires at least one action");
+                    "TurnRoutingPlan requires a TurnIntentGraph");
         }
         auditSummary = auditSummary == null || auditSummary.isBlank()
-                ? actions.stream()
-                        .map(action -> action.actionType().name())
-                        .collect(Collectors.joining(" -> "))
+                ? graph.auditSummary()
                 : auditSummary.trim();
     }
 
@@ -40,9 +50,16 @@ public record TurnRoutingPlan(
     }
 
     /**
+     * @return executable actions in graph node order
+     */
+    public List<TurnAction> actions() {
+        return graph.actions();
+    }
+
+    /**
      * @return whether this plan contains more than one Control action
      */
     public boolean mixed() {
-        return actions.size() > 1;
+        return graph.mixed();
     }
 }

@@ -9,6 +9,7 @@ import com.funjson.metaagent.job.domain.DefaultJobCompletionPolicy;
 import com.funjson.metaagent.job.domain.JobCompletionPolicy;
 import com.funjson.metaagent.loop.domain.ExecutionDerivationPolicy;
 import com.funjson.metaagent.loop.domain.ClarificationNeedDetector;
+import com.funjson.metaagent.loop.domain.LoopCompletionJudge;
 import com.funjson.metaagent.loop.domain.LoopCompletionPolicy;
 import com.funjson.metaagent.loop.domain.LoopCorrectionPolicy;
 import com.funjson.metaagent.loop.domain.LoopEvaluator;
@@ -53,8 +54,11 @@ public class DomainPolicyConfiguration {
     /** @return Loop Evaluator */
     @Bean
     public LoopCompletionPolicy loopCompletionPolicy(
-            ClarificationNeedDetector clarificationNeedDetector) {
-        return new LoopEvaluator(clarificationNeedDetector);
+            ClarificationNeedDetector clarificationNeedDetector,
+            LoopCompletionJudge completionJudge) {
+        return new LoopEvaluator(
+                clarificationNeedDetector,
+                completionJudge);
     }
 
     /** @return 长任务执行纠偏策略 */

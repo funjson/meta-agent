@@ -246,10 +246,25 @@
                              )) LIKE '用户已补充澄清信息%'
                         THEN '继续生成最终结果'
                     WHEN node.parent_node_id IS NOT NULL
+                         AND node.action_type IN (
+                             'TOOL_CALL',
+                             'WEB_SEARCH',
+                             'FILE_SEARCH',
+                             'SKILL_LOAD',
+                             'RAG_QUERY'
+                         )
+                        THEN '调用工具'
+                    WHEN node.parent_node_id IS NOT NULL
                         THEN '根据反馈调整'
                     WHEN node.action_type = 'MODEL_CALL'
                         THEN '模型生成'
-                    WHEN node.action_type = 'TOOL_CALL'
+                    WHEN node.action_type IN (
+                        'TOOL_CALL',
+                        'WEB_SEARCH',
+                        'FILE_SEARCH',
+                        'SKILL_LOAD',
+                        'RAG_QUERY'
+                    )
                         THEN '调用工具'
                     WHEN node.action_type = 'CHILD_JOB'
                         THEN '派生子任务'
@@ -269,6 +284,20 @@
                          )) LIKE '用户已补充澄清信息%'
                     THEN CONCAT(
                         '收到用户补充后继续推进 · 第 ',
+                        node.iteration_no,
+                        ' 轮 · 目标：',
+                        LEFT(REPLACE(REPLACE(node.goal, '\r', ' '), '\n', ' '), 130)
+                    )
+                WHEN node.parent_node_id IS NOT NULL
+                     AND node.action_type IN (
+                         'TOOL_CALL',
+                         'WEB_SEARCH',
+                         'FILE_SEARCH',
+                         'SKILL_LOAD',
+                         'RAG_QUERY'
+                     )
+                    THEN CONCAT(
+                        '执行模型选择的单个工具动作 · 第 ',
                         node.iteration_no,
                         ' 轮 · 目标：',
                         LEFT(REPLACE(REPLACE(node.goal, '\r', ' '), '\n', ' '), 130)

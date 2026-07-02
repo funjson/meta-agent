@@ -190,6 +190,7 @@ export function App() {
   const [streamingAssistant, setStreamingAssistant] = useState<StreamingAssistant | null>(null)
   const [uploadingFiles, setUploadingFiles] = useState(false)
   const [showThinking, setShowThinking] = useState(false)
+  const [backgroundRunning, setBackgroundRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copyNotice, setCopyNotice] = useState<string | null>(null)
   const [systemInfo, setSystemInfo] = useState<SystemInfoView | null>(null)
@@ -437,6 +438,7 @@ export function App() {
             setAwaitingAssistant(false)
             setPendingAssistantAfter(null)
             setStreamingAssistant(null)
+            setBackgroundRunning(false)
           }
         })
         .catch(() => undefined)
@@ -594,6 +596,7 @@ export function App() {
     setAwaitingAssistant(true)
     setPendingAssistantAfter(pendingAfter)
     setStreamingAssistant(null)
+    setBackgroundRunning(false)
     setError(null)
 
     try {
@@ -620,6 +623,7 @@ export function App() {
       if (hasAssistantAfter(result.conversation, pendingAfter)) {
         setAwaitingAssistant(false)
         setPendingAssistantAfter(null)
+        setBackgroundRunning(false)
       }
       await Promise.all([
         loadPath(result.conversation.id),
@@ -631,6 +635,7 @@ export function App() {
       setAwaitingAssistant(false)
       setPendingAssistantAfter(null)
       setStreamingAssistant(null)
+      setBackgroundRunning(false)
     } finally {
       setSending(false)
     }
@@ -705,6 +710,7 @@ export function App() {
         setAwaitingAssistant(false)
         setPendingAssistantAfter(null)
         setStreamingAssistant(null)
+        setBackgroundRunning(false)
       }
       await Promise.all([
         loadPath(result.conversation.id),
@@ -723,6 +729,7 @@ export function App() {
         messageType: start.messageType,
         content: '',
       })
+      setBackgroundRunning(false)
       return
     }
     if (frame.event === 'assistant_delta') {
@@ -738,6 +745,7 @@ export function App() {
       setAwaitingAssistant(false)
       setPendingAssistantAfter(null)
       setStreamingAssistant(null)
+      setBackgroundRunning(false)
       await Promise.all([
         loadConversation(conversationId),
         loadConversations(),
@@ -747,8 +755,7 @@ export function App() {
     if (frame.event === 'done') {
       const done = JSON.parse(frame.data) as { assistantMessageEmitted: boolean }
       if (!done.assistantMessageEmitted) {
-        setAwaitingAssistant(false)
-        setPendingAssistantAfter(null)
+        setBackgroundRunning(true)
         setStreamingAssistant(null)
       }
       await loadPath(conversationId).catch(() => undefined)
@@ -798,6 +805,10 @@ export function App() {
     setError(null)
     try {
       setDraft('')
+      setAwaitingAssistant(false)
+      setPendingAssistantAfter(null)
+      setStreamingAssistant(null)
+      setBackgroundRunning(false)
       await createConversation()
     } catch (requestError: unknown) {
       setError(messageOf(requestError))
@@ -808,6 +819,10 @@ export function App() {
     if (conversation?.id === conversationId) return
     setError(null)
     setDraft('')
+    setAwaitingAssistant(false)
+    setPendingAssistantAfter(null)
+    setStreamingAssistant(null)
+    setBackgroundRunning(false)
     setCollapsedPathNodes(new Set())
     try {
       await loadConversation(conversationId)
@@ -1155,13 +1170,15 @@ export function App() {
               <div className="message-body">
                 <div className="message-meta">
                   <strong>Meta Agent</strong>
-                  <span>处理中</span>
+                  <span>{backgroundRunning ? '后台运行中' : '处理中'}</span>
                 </div>
                 <div className="thinking-line">
                   <i />
                   <i />
                   <i />
-                  正在处理你的消息…
+                  {backgroundRunning
+                    ? '流式窗口已结束，后台任务仍在运行，正在持续刷新结果…'
+                    : '正在处理你的消息…'}
                 </div>
               </div>
             </article>

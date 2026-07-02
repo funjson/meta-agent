@@ -4,6 +4,7 @@ import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
+import java.util.Locale;
 
 import com.funjson.metaagent.runtime.domain.RuntimeStateException;
 import org.springframework.stereotype.Component;
@@ -37,6 +38,71 @@ public class WebAccessPolicy {
                     "URLs with userinfo are not allowed");
         }
         validateHost(uri.getHost());
+    }
+
+    /**
+     * Validates that a URI can be fetched as a concrete source document.
+     *
+     * <p>Search engine result pages are discovery surfaces, not evidence
+     * documents. Fetching them is brittle, frequently blocked, and causes the
+     * model to confuse “search page” with “source page”; callers should use
+     * web.search first, then fetch URLs returned by search candidates.</p>
+     *
+     * @param uri candidate URI
+     */
+    public void requireFetchableDocumentUri(URI uri) {
+        requirePublicHttpUri(uri);
+        if (isSearchEngineResultPage(uri)) {
+            throw new RuntimeStateException(
+                    "WEB_FETCH_SEARCH_RESULT_DENIED",
+                    "web.fetch cannot read search result pages; "
+                            + "use web.search and then fetch concrete "
+                            + "candidate source URLs");
+        }
+    }
+
+    /**
+     * Detects common public search result URLs that should not be fetched.
+     *
+     * @param uri candidate URI
+     * @return true when the URL is a SERP rather than an evidence document
+     */
+    private boolean isSearchEngineResultPage(URI uri) {
+        String host = normalizeHost(uri.getHost());
+        String path = uri.getPath() == null
+                ? ""
+                : uri.getPath().toLowerCase(Locale.ROOT);
+        String query = uri.getRawQuery() == null ? "" : uri.getRawQuery();
+        if (host.endsWith("google.com") && path.startsWith("/search")) {
+            return true;
+        }
+        if (host.endsWith("bing.com") && path.startsWith("/search")) {
+            return true;
+        }
+        if (host.endsWith("duckduckgo.com")
+                && (path.isBlank() || "/".equals(path) || "/html".equals(path))
+                && query.contains("q=")) {
+            return true;
+        }
+        if (host.endsWith("baidu.com") && path.startsWith("/s")) {
+            return true;
+        }
+        if (host.endsWith("yahoo.com") && path.startsWith("/search")) {
+            return true;
+        }
+        return host.endsWith("yandex.com") && path.startsWith("/search");
+    }
+
+    /**
+     * @return lowercase host without the common www prefix.
+     */
+    private String normalizeHost(String host) {
+        String normalized = host == null
+                ? ""
+                : host.toLowerCase(Locale.ROOT);
+        return normalized.startsWith("www.")
+                ? normalized.substring(4)
+                : normalized;
     }
 
     /**

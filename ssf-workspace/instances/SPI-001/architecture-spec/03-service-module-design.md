@@ -5,7 +5,7 @@
 | 模块 | 职责 | 非职责 |
 |---|---|---|
 | conversation | Conversation、Message、可见消息查询和消息持久化 | 意图识别、Job 创建、执行、内部状态消息 |
-| intent | 规则、模型、降级和结果校验 | 操作 Job、Task 或会话状态 |
+| intent | Turn Understanding、混合意图、任务级意图改写、规则、模型、降级和结果校验 | 操作 Job、Task 或会话状态；生成 web/search 查询词 |
 | clarification | ClarificationRequest、去重、轮次控制、回答恢复目标 | 意图识别、Job/Task 调度 |
 | control | ControlTurn、ControlDecision、ControlKernel、控制命令和用户状态反馈 | Message 所有权、TaskGraph 内部调度、Loop 执行 |
 | context | ContextEnvelope、ContextAssembler、LoopContextBuilder、结构化上下文块、Token 预算入口 | 模型调用、工具执行、消息持久化 |
@@ -45,6 +45,7 @@ Observability → 持久化读模型
 - `TaskCoordinator`：创建与派发 TaskRun、管理租约入口、执行 Task 验收。
 - `LoopExecutionCoordinator`：执行 LoopNode 阶段、Checkpoint、动作、ChildJobRequest 与 Loop 验收。
 - `ControlKernel`：以 ControlTurn 为边界协调 Message、ContextEnvelope、PendingInteraction、Intent、Job 初始化、后台提交和用户状态反馈。
+- `TurnUnderstandingService`：整轮用户输入理解入口，统一处理 pending 候选、新任务、控制命令、混合意图和任务级 canonicalGoal 改写；模型不可用时退回单动作安全降级。
 - `ControlJobInitializationService`：从 Control 决策创建根 Job，收束 Provider 解析、TaskGraphTemplate 匹配、动态 TaskGraph 规划和 TaskGraph 级 Clarification 注册。
 - `ControlUserResponseRenderer` / `ClarificationUserResponseRenderer`：用户可见消息渲染边界；ControlDecision、Clarification contract、Checkpoint 等系统对象不得直接进入聊天室。
 - `TaskDispatchCoordinator`：原子创建 TaskRun/Dispatch，并允许多个 Worker 并行领取同一 Job 的独立 READY Task。
@@ -137,8 +138,11 @@ v0.1 已提供受控脚本执行器：解释器白名单、临时目录、清空
   问题漂移。
 - Loop 运行时自然语言追问升级为 `clarification.request` 时，也必须生成并持久化运行时合同；
   `ToolExecutionService` 支持 `contractJson` / `contract` 两种参数形态。
-- `PendingInteractionCompletionPolicy` 只允许默认授权补齐 `defaultable=true` 的槽位；不可默认
-  的关键槽位仍缺失时，必须继续等待用户补充。
+- `PendingInteractionCompletionPolicy` 只允许默认授权补齐 `requiredLevel=SOFT/OPTIONAL`
+  且 `defaultable=true` 的槽位；`BLOCKING` 关键槽位仍缺失时，必须继续等待用户补充。
+- `ControlJobInitializationService` 对低风险生成任务做澄清合同归一化：用途、背景、风格、
+  长度等质量字段可从模型误标的硬阻塞降为 SOFT；天气地点、文件、检索、工具参数、权限、
+  成本和外部副作用不做放松。
 - `EXPLAIN_PENDING_REQUIREMENTS` 只解释当前合同还需要的信息，不绑定回答、不恢复任务、不创建 Job。
 - 没有 open pending interaction 时，`CLARIFICATION_ANSWER` 只能进入无目标保护提示，
   不能被局部规则改写为新任务；混合意图必须通过 `TurnRoutingPlan` 明确表达。
@@ -154,13 +158,25 @@ v0.1 已提供受控脚本执行器：解释器白名单、临时目录、清空
 
 ## 实现校准 r12：混合意图、Conversation Fact 与 ControlActionExecutor
 
-- `TurnRouter` 新增为 Control 轮次路由门面：先执行 `PendingInteractionRouter`，再在保守混合意图
-  标记出现时追加普通 `IntentRecognition`，输出 `TurnRoutingPlan`。
-- `TurnRoutingPlan` 由 `TurnAction` 组成，当前覆盖 `ANSWER_PENDING_INTERACTION`、
-  `CREATE_JOB`、`ASK_DISAMBIGUATION`、`EXPLAIN_PENDING_REQUIREMENTS`、`CONTROL_MESSAGE`
-  和 `NO_OP`。
+- `TurnRouter` 是 Control 轮次路由门面，正式能力由 `TurnUnderstandingService` 提供：
+  模型一次性看到用户消息、Conversation Context、open pending candidates、已解决事实和当前时间，
+  输出 `TurnRoutingPlan(TurnIntentGraph)`。
+- 混合意图以模型输出的 `TurnIntentGraph.nodes[] / edges[]` 为主。`nodes[]` 表示一句话里的
+  pending 回答、新 Job、控制命令或消歧节点；`edges[]` 表示独立、结果依赖、顺序依赖或消歧关系。
+  降级路径只产出保守单节点图，不再通过 `TurnPlanRepairer` / `MixedTurnSegmenter` 做规则拆分。
+- `ControlTurnGraphCompiler` 将 `TurnIntentGraph` 编译为 `ControlExecutionPlan`。某节点进入澄清或等待时，
+  只阻塞依赖它的下游节点，不阻塞无关兄弟节点。
+- `CREATE_JOB` 节点通过 `JobInitializationSpec` 创建根 Job，使 nodeId、taskType、canonicalGoal、
+  labels、risk 与 clarification contract 都保持节点级隔离，避免混合任务之间互相污染。
+- `CREATE_JOB` action 可以携带 `canonicalGoal` 与 `IntentRewrite`。这是任务级改写，只把口语化
+  表达规范成清晰 Job 目标；web/search 查询词改写继续放在 Research/Loop/Tool Planning。
+- `TurnRoutingPlan` 由 `TurnAction` 组成，当前覆盖 `ANSWER_PENDING`、`CREATE_JOB`、
+  `ASK_DISAMBIGUATION`、`EXPLAIN_PENDING_REQUIREMENTS`、`CONTROL_MESSAGE`
+  和 `CLARIFICATION_NO_TARGET`。
 - `ControlActionExecutor` 负责消费 Plan：创建 Job、恢复 Clarification、写入结构化
-  `conversation_fact`、生成后台 `ControlDispatchCommand`。Intent 层仍然不操作 Job。
+  `conversation_fact`、生成后台 `ControlDispatchCommand`。当澄清回答仍不完整但同轮还有独立
+  `CREATE_JOB` 时，不再无条件停止后续 action；即时澄清消息仍绑定等待中的 Job。
+  Intent 层仍然不操作 Job。
 - `conversation_fact` 保存 Conversation 级结构化事实，来自已解决澄清或部分澄清回答；
   ContextAssembler 将这些事实注入 Intent 与 Loop Prompt View，但不作为聊天消息展示。
 
@@ -261,3 +277,21 @@ research-plan
 
 - 默认 Deep Research 仍然完全落在 `Job → TaskGraph → Task → TaskRun → LoopRun`，
   不恢复 Workflow 概念；配置型 `TaskGraphTemplate` 后续可以覆盖默认图。
+
+## 实现校准 r18：混合意图 Job 作用域隔离
+
+- `TurnIntentNode` 只描述一轮输入里的任务节点；每个可执行节点创建独立 root `Job`。
+  Job 创建时把节点语义固化为 `TaskIntentScope`，并写入 `job.effective_policy_snapshot.intentScope`。
+- `TaskIntentScope` 包含 `turnNodeId`、`taskType`、`sourceSpan`、`canonicalGoal`、
+  澄清合同快照与 `allowedToolIds`。Loop 运行时只读取该快照，不反向依赖 Intent/Control。
+- `conversation_fact` 分为稳定跨任务事实与 Job 级任务参数：
+  - `CONVERSATION`：姓名、昵称等稳定身份事实，可以被同一会话内多个 Job 复用。
+  - `JOB:<jobId>`：用途、风格、长度、地点等任务参数，只注入所属 Job。
+- `TaskScopedContextProjector` 在 Loop Context 构建阶段保留可见聊天历史，但按
+  `TaskIntentScope + jobId` 过滤结构化事实、等待澄清和已解决澄清事实，避免兄弟任务互相污染。
+- `LoopToolExposurePolicy` 以 `TaskIntentScope.allowedToolIds` 为主边界。历史 Job 没有
+  `TaskIntentScope` 时才回退到旧的目标文本启发式，防止“同一句话里有天气任务”导致个人介绍
+  Job 暴露 `weather.current`。
+- 澄清恢复写入事实时使用当前 Job 作用域；稳定身份事实自动提升到 Conversation 作用域。
+  因此“我叫冯建松，另外查天气”会创建两个 Job：个人介绍 Job 可复用姓名，天气 Job 可使用
+  地点/天气工具，但两者的任务参数、澄清合同和工具集合互不覆盖。

@@ -1,5 +1,8 @@
 package com.funjson.metaagent.loop.application;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -11,6 +14,7 @@ import com.funjson.metaagent.loop.domain.LoopActionResult;
 import com.funjson.metaagent.loop.domain.LoopActionType;
 import com.funjson.metaagent.loop.domain.ClarificationNeedDetector;
 import com.funjson.metaagent.loop.domain.ExecutionDerivationPolicy;
+import com.funjson.metaagent.loop.domain.ExecutionDerivationRequest;
 import com.funjson.metaagent.loop.domain.LoopEvaluation;
 import com.funjson.metaagent.loop.domain.LoopEvaluationDecision;
 import com.funjson.metaagent.loop.domain.LoopCompletionPolicy;
@@ -20,6 +24,7 @@ import com.funjson.metaagent.loop.domain.LoopExecutionPolicy;
 import com.funjson.metaagent.loop.domain.LoopOutcome;
 import com.funjson.metaagent.loop.domain.LoopPhaseType;
 import com.funjson.metaagent.loop.domain.LoopPlan;
+import com.funjson.metaagent.loop.domain.LoopToolExposurePolicy;
 import com.funjson.metaagent.loop.domain.RuntimeClarificationContractBuilder;
 import com.funjson.metaagent.loop.domain.RunExecutionContext;
 import com.funjson.metaagent.runtime.domain.RuntimeStateException;
@@ -37,6 +42,8 @@ import com.funjson.metaagent.recovery.domain.ResumeExecutionSnapshot;
 import com.funjson.metaagent.recovery.domain.LoopNodeResumeContext;
 import com.funjson.metaagent.runtime.domain.ChildJobOutcome;
 import com.funjson.metaagent.runtime.domain.ClarificationAnswerOutcome;
+import com.funjson.metaagent.runtime.application.port.out.TaskIntentScopeStore;
+import com.funjson.metaagent.runtime.domain.TaskIntentScope;
 import com.funjson.metaagent.tool.application.ToolExecutionService;
 import com.funjson.metaagent.tool.application.ToolInvocationCommand;
 import com.funjson.metaagent.tool.application.ToolCatalogService;
@@ -60,6 +67,8 @@ public class RuntimeExecutionService implements LoopRunExecutor {
     private final ReActActionPlanner actionPlanner;
     private final LoopCompletionPolicy loopCompletionPolicy;
     private final LoopCorrectionPolicy loopCorrectionPolicy;
+    private final LoopToolExposurePolicy toolExposurePolicy =
+            new LoopToolExposurePolicy();
     private final ClarificationNeedDetector clarificationNeedDetector;
     private final ExecutionDerivationPolicy derivationPolicy;
     private final CapabilityApplicationService capabilityApplications;
@@ -67,6 +76,7 @@ public class RuntimeExecutionService implements LoopRunExecutor {
     private final LoopContextBuilder loopContextBuilder;
     private final ToolExecutionService toolExecutionService;
     private final ToolCatalogService toolCatalogService;
+    private final TaskIntentScopeStore taskIntentScopes;
     private final RuntimeClarificationContractBuilder clarificationContracts =
             new RuntimeClarificationContractBuilder();
 
@@ -84,6 +94,9 @@ public class RuntimeExecutionService implements LoopRunExecutor {
      * @param capabilityApplications Capability 应用服务
      * @param runtimeLeases TaskRun 租约服务
      * @param loopContextBuilder Loop 上下文构建器
+     * @param toolExecutionService framework tool execution service
+     * @param toolCatalogService framework tool catalog
+     * @param taskIntentScopes task-scoped intent snapshot reader
      */
     public RuntimeExecutionService(
             RuntimeTransactionService transactions,
@@ -98,7 +111,8 @@ public class RuntimeExecutionService implements LoopRunExecutor {
             RuntimeLeaseService runtimeLeases,
             LoopContextBuilder loopContextBuilder,
             ToolExecutionService toolExecutionService,
-            ToolCatalogService toolCatalogService) {
+            ToolCatalogService toolCatalogService,
+            TaskIntentScopeStore taskIntentScopes) {
         this.transactions = transactions;
         this.modelProviders = modelProviders;
         this.promptRegistry = promptRegistry;
@@ -112,6 +126,7 @@ public class RuntimeExecutionService implements LoopRunExecutor {
         this.loopContextBuilder = loopContextBuilder;
         this.toolExecutionService = toolExecutionService;
         this.toolCatalogService = toolCatalogService;
+        this.taskIntentScopes = taskIntentScopes;
     }
 
     /**
@@ -182,8 +197,9 @@ public class RuntimeExecutionService implements LoopRunExecutor {
                                 context,
                                 plan,
                                 capabilityContext,
-                                contextSnapshot);
-                if (plan.actionType() == LoopActionType.MODEL_CALL
+                                contextSnapshot,
+                                policy);
+                if (actionResult.actionType() == LoopActionType.MODEL_CALL
                         && clarificationNeedDetector.requiresClarification(
                         actionResult.content())) {
                     return suspendForModelClarification(
@@ -255,12 +271,55 @@ public class RuntimeExecutionService implements LoopRunExecutor {
                     "执行模型直接决定回答或调用工具",
                     modelCallTokenBudget(context));
         }
+        LoopPlan planned = actionPlanner.plan(
+                context,
+                capabilityContext,
+                contextSnapshot);
+        TaskIntentScope intentScope = taskIntentScopes.findByJobId(
+                        context.jobId())
+                .orElse(TaskIntentScope.unspecified());
         return loopCorrectionPolicy.correctPlan(
                 context,
-                actionPlanner.plan(
+                enforceToolExposure(context, intentScope, planned));
+    }
+
+    /**
+     * Applies the same task-scoped tool visibility to fallback JSON planner
+     * output that native function calling already receives through schemas.
+     *
+     * @param context LoopNode context
+     * @param plan planner output
+     * @return original plan or a safe model-call convergence plan
+     */
+    private LoopPlan enforceToolExposure(
+            RunExecutionContext context,
+            TaskIntentScope intentScope,
+            LoopPlan plan) {
+        if (!isToolPlan(plan)
+                || toolExposurePolicy.allowNativeTool(
                         context,
-                        capabilityContext,
-                        contextSnapshot));
+                        intentScope,
+                        plan.toolId())) {
+            return plan;
+        }
+        // The fallback planner saw a broad tool catalog, but the current Task
+        // goal does not authorize that tool. Converge back to model synthesis
+        // instead of executing a sibling task's capability by accident.
+        return LoopPlan.modelCall(
+                "在当前任务目标范围内生成用户可见结果",
+                "工具可见性收束：计划中的工具不属于当前 Task/Loop 目标",
+                modelCallTokenBudget(context));
+    }
+
+    /**
+     * Checks whether a LoopPlan performs a framework tool action.
+     */
+    private boolean isToolPlan(LoopPlan plan) {
+        return switch (plan.actionType()) {
+            case TOOL_CALL, RAG_QUERY, WEB_SEARCH, FILE_SEARCH, SKILL_LOAD ->
+                    true;
+            default -> false;
+        };
     }
 
     /**
@@ -306,13 +365,15 @@ public class RuntimeExecutionService implements LoopRunExecutor {
             RunExecutionContext context,
             LoopPlan plan,
             CapabilityPlanningContext capabilityContext,
-            LoopContextSnapshot contextSnapshot) {
+            LoopContextSnapshot contextSnapshot,
+            LoopExecutionPolicy policy) {
         return switch (plan.actionType()) {
             case MODEL_CALL -> executeModelAction(
                     context,
                     plan,
                     capabilityContext,
-                    contextSnapshot);
+                    contextSnapshot,
+                    policy);
             case TOOL_CALL, RAG_QUERY, WEB_SEARCH, FILE_SEARCH, SKILL_LOAD ->
                     executeToolAction(context, plan);
             case CLARIFICATION_REQUEST -> throw new RuntimeStateException(
@@ -478,7 +539,8 @@ public class RuntimeExecutionService implements LoopRunExecutor {
             RunExecutionContext context,
             LoopPlan plan,
             CapabilityPlanningContext capabilityContext,
-            LoopContextSnapshot contextSnapshot) {
+            LoopContextSnapshot contextSnapshot,
+            LoopExecutionPolicy policy) {
         var prompt = renderModelPrompt(
                 context,
                 capabilityContext,
@@ -524,9 +586,10 @@ public class RuntimeExecutionService implements LoopRunExecutor {
                 actionHandle,
                 response);
         if (response.hasToolCalls()) {
-            return executeModelSelectedTool(
+            return executeModelSelectedTools(
                     context,
-                    response.toolCalls().getFirst());
+                    response.toolCalls(),
+                    policy);
         }
         return LoopActionResult.fromModel(response);
     }
@@ -540,7 +603,21 @@ public class RuntimeExecutionService implements LoopRunExecutor {
         if (!modelProvider.supportsNativeToolCalling(context.providerId())) {
             return java.util.List.of();
         }
+        TaskIntentScope intentScope = taskIntentScopes.findByJobId(
+                        context.jobId())
+                .orElse(TaskIntentScope.unspecified());
         return toolCatalogService.modelToolSpecs().stream()
+                // clarification.request 是 Loop/Control 的状态迁移协议，
+                // 不作为普通原生工具暴露给模型，避免绕过 WAITING_HUMAN 流程。
+                .filter(tool -> !"clarification.request".equals(tool.toolId()))
+                // Mixed-turn Jobs share Conversation facts, but native tools
+                // must stay scoped to the current Task goal. This prevents a
+                // personal-introduction Loop from calling weather/web tools
+                // only because a sibling weather Job exists in the same turn.
+                .filter(tool -> toolExposurePolicy.allowNativeTool(
+                        context,
+                        intentScope,
+                        tool.toolId()))
                 .filter(tool -> loopCorrectionPolicy.allowNativeTool(
                         context,
                         tool.toolId()))
@@ -564,26 +641,161 @@ public class RuntimeExecutionService implements LoopRunExecutor {
     /**
      * 执行模型原生 tool_call。
      *
-     * <p>模型调用本身已经占用当前 LoopNode 的 ACTION_EXECUTION phase；
-     * 工具调用会写入 tool_invocation 审计表并出现在 Agent Path 中，避免重复写入
-     * 同一 LoopNode phase sequence。</p>
+     * <p>父 LoopNode 只表达“模型已经决定调用哪些工具”；每个实际工具调用都会
+     * 物化为一个 Child LoopNode。这样 Agent Path 可以看到 ReAct 的递归结构：
+     * 父节点负责模型决策，子节点负责单个工具动作。</p>
      */
-    private LoopActionResult executeModelSelectedTool(
+    private LoopActionResult executeModelSelectedTools(
             RunExecutionContext context,
-            ModelToolCall toolCall) {
+            List<ModelToolCall> toolCalls,
+            LoopExecutionPolicy policy) {
+        List<LoopActionResult> results = new ArrayList<>();
+        for (int index = 0; index < toolCalls.size(); index++) {
+            // 父节点已经记录模型决策；每个真实工具动作单独落到子 LoopNode。
+            results.add(executeModelSelectedToolChild(
+                    context,
+                    toolCalls.get(index),
+                    index,
+                    policy));
+        }
+        transactions.resumeAfterChildExecution(context);
+        return aggregateModelSelectedToolResults(context, toolCalls, results);
+    }
+
+    /**
+     * 把单个模型原生 tool_call 物化为 Child LoopNode 并执行。
+     *
+     * @param parent 父 LoopNode，上面已经完成模型决策
+     * @param toolCall 模型选择的工具调用
+     * @param index 同一模型响应中的序号
+     * @param policy LoopTree 执行边界
+     * @return 工具 Observation，供父 LoopNode 继续感知与评估
+     */
+    private LoopActionResult executeModelSelectedToolChild(
+            RunExecutionContext parent,
+            ModelToolCall toolCall,
+            int index,
+            LoopExecutionPolicy policy) {
         LoopActionType actionType = actionTypeForTool(toolCall.toolId());
-        return toolExecutionService.invokeForLoop(
-                context,
-                new ToolInvocationCommand(
-                        toolCall.toolId(),
-                        toolCall.arguments(),
-                        nativeToolIdempotencyKey(context, toolCall),
-                        context.jobId(),
-                        context.taskId(),
-                        context.taskRunId(),
-                        context.loopRunId(),
-                        context.loopNodeId()),
-                actionType);
+        RunExecutionContext child = transactions.spawnChild(
+                parent,
+                ExecutionDerivationRequest.childLoop(
+                        nativeToolChildIdempotencyKey(parent, toolCall, index),
+                        "model-native-tool-call",
+                        "执行工具调用 " + toolCall.toolId(),
+                        "父 LoopNode 已完成模型决策；本节点只执行第 "
+                                + (index + 1)
+                                + " 个原生工具调用。"),
+                policy);
+        transactions.recordCompletedPhase(
+                child,
+                LoopPhaseType.CONTEXT_BUILD,
+                "已继承父 LoopNode 的原生工具调用决策",
+                Map.of(
+                        "parentLoopNodeId", parent.loopNodeId(),
+                        "toolCallIndex", index),
+                Map.of(
+                        "toolId", toolCall.toolId(),
+                        "functionName", toolCall.functionName(),
+                        "argumentKeys", toolCall.arguments().keySet()),
+                "CONTEXT_BUILT");
+        LoopPlan childPlan = LoopPlan.toolCall(
+                actionType,
+                "单个原生工具调用完成后把 Observation 回传给父 LoopNode",
+                "执行模型选择的工具：" + toolCall.toolId(),
+                toolCall.toolId(),
+                toolCall.arguments());
+        transactions.recordPlan(child, childPlan);
+        LoopActionResult result = executeToolAction(child, childPlan);
+        transactions.completeChildLoopNode(child, result);
+        return result;
+    }
+
+    /**
+     * 聚合同一模型响应中的多个工具 Observation。
+     *
+     * <p>批量 Observation 仍然只对应当前 LoopNode 的一次动作结果，避免重复写
+     * phase；具体工具调用通过 tool_invocation 表和 Agent Path 展开。</p>
+     *
+     * @param context LoopNode 上下文
+     * @param toolCalls 模型返回的原生工具调用
+     * @param results 工具执行结果
+     * @return 聚合后的动作结果
+     */
+    private LoopActionResult aggregateModelSelectedToolResults(
+            RunExecutionContext context,
+            List<ModelToolCall> toolCalls,
+            List<LoopActionResult> results) {
+        LoopActionType actionType = aggregateActionType(results);
+        List<Map<String, Object>> resultAttributes = new ArrayList<>();
+        StringBuilder content = new StringBuilder();
+        boolean allSucceeded = true;
+        for (int index = 0; index < results.size(); index++) {
+            LoopActionResult result = results.get(index);
+            ModelToolCall toolCall = toolCalls.get(index);
+            boolean success = toolSuccess(result);
+            allSucceeded = allSucceeded && success;
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("index", index);
+            item.put("toolId", toolCall.toolId());
+            item.put("functionName", toolCall.functionName());
+            item.put("success", success);
+            item.put("source", result.source());
+            item.put("attributes", result.attributes());
+            resultAttributes.add(item);
+            content.append("工具调用 #")
+                    .append(index + 1)
+                    .append(" toolId=")
+                    .append(toolCall.toolId())
+                    .append(" success=")
+                    .append(success)
+                    .append(System.lineSeparator())
+                    .append(result.content() == null
+                            ? ""
+                            : result.content())
+                    .append(System.lineSeparator())
+                    .append(System.lineSeparator());
+        }
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        attributes.put("toolBatch", true);
+        attributes.put("toolCallCount", results.size());
+        attributes.put("success", allSucceeded);
+        attributes.put("toolId", aggregateToolId(toolCalls));
+        attributes.put("results", resultAttributes);
+        return new LoopActionResult(
+                actionType,
+                "tool-batch:" + context.loopNodeId(),
+                content.toString().trim(),
+                attributes);
+    }
+
+    /**
+     * @return 批量工具结果的语义动作类型。
+     */
+    private LoopActionType aggregateActionType(
+            List<LoopActionResult> results) {
+        LoopActionType first = results.getFirst().actionType();
+        boolean same = results.stream()
+                .allMatch(result -> result.actionType() == first);
+        return same ? first : LoopActionType.TOOL_CALL;
+    }
+
+    /**
+     * @return 批量工具结果的代表性 Tool ID。
+     */
+    private String aggregateToolId(List<ModelToolCall> toolCalls) {
+        String first = toolCalls.getFirst().toolId();
+        boolean same = toolCalls.stream()
+                .allMatch(toolCall -> first.equals(toolCall.toolId()));
+        return same ? first : "tool.batch";
+    }
+
+    /**
+     * @return 工具结果是否成功；旧结果缺少 success 字段时按成功处理。
+     */
+    private boolean toolSuccess(LoopActionResult result) {
+        Object success = result.attributes().get("success");
+        return success == null || Boolean.parseBoolean(String.valueOf(success));
     }
 
     /**
@@ -601,15 +813,33 @@ public class RuntimeExecutionService implements LoopRunExecutor {
     }
 
     /**
-     * @return 模型原生工具调用幂等键
+     * @return 模型原生工具调用对应 Child LoopNode 的幂等键。
      */
-    private String nativeToolIdempotencyKey(
+    private String nativeToolChildIdempotencyKey(
             RunExecutionContext context,
-            ModelToolCall toolCall) {
-        return "loop-native-tool:"
+            ModelToolCall toolCall,
+            int index) {
+        return "loop-native-tool-child:"
                 + context.loopNodeId()
                 + ":"
-                + toolCall.toolId();
+                + nativeToolCallIdentity(toolCall, index);
+    }
+
+    /**
+     * @return Provider tool_call ID 不稳定或为空时的稳定本地标识。
+     */
+    private String nativeToolCallIdentity(
+            ModelToolCall toolCall,
+            int index) {
+        String providerToolCallId = toolCall.id() == null
+                || toolCall.id().isBlank()
+                        ? "index-" + index
+                        : toolCall.id();
+        return index
+                + ":"
+                + toolCall.toolId()
+                + ":"
+                + providerToolCallId;
     }
 
     /**
@@ -665,9 +895,15 @@ public class RuntimeExecutionService implements LoopRunExecutor {
                     context,
                     handle,
                     response);
+            LoopActionResult actionResult = response.hasToolCalls()
+                    ? executeModelSelectedTools(
+                            context,
+                            response.toolCalls(),
+                            LoopExecutionPolicy.baseline())
+                    : LoopActionResult.fromModel(response);
             EvaluationStep step = evaluateAction(
                     context,
-                    LoopActionResult.fromModel(response),
+                    actionResult,
                     snapshot.completionCriterion(),
                     LoopExecutionPolicy.baseline());
             if (step.outcome() != null) {

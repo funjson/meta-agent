@@ -50,7 +50,7 @@ public class JavaHttpWebDocumentFetcher implements WebDocumentFetcher {
      * Fetches a URL, validating every redirect target before following it.
      */
     private FetchedWebDocument fetch(URI uri, int maxBytes, int redirectCount) {
-        accessPolicy.requirePublicHttpUri(uri);
+        accessPolicy.requireFetchableDocumentUri(uri);
         try {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(uri)
@@ -118,8 +118,9 @@ public class JavaHttpWebDocumentFetcher implements WebDocumentFetcher {
         }
         URI target = currentUri.resolve(location);
         // Re-enter the public-web policy for every hop so an apparently public
-        // URL cannot bounce the fetcher into localhost or private networks.
-        accessPolicy.requirePublicHttpUri(target);
+        // URL cannot bounce the fetcher into localhost, private networks, or a
+        // search result page that should have gone through web.search.
+        accessPolicy.requireFetchableDocumentUri(target);
         return fetch(target, maxBytes, redirectCount + 1);
     }
 

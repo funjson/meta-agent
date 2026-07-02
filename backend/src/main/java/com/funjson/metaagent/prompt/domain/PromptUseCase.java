@@ -32,6 +32,18 @@ public enum PromptUseCase {
                     "candidateJson",
                     "userMessage")),
 
+    /** Control Kernel 的整轮理解、混合意图和任务级改写 Prompt。 */
+    CONTROL_TURN_UNDERSTANDING(
+            "control.turn-understanding",
+            "v1",
+            "classpath:prompts/control/turn-understanding/v1/system.md",
+            "classpath:prompts/control/turn-understanding/v1/user.md",
+            Set.of(
+                    "conversationContext",
+                    "currentTime",
+                    "pendingCandidateJson",
+                    "userMessage")),
+
     /** Control Kernel 的复合 Task Graph 规划 Prompt。 */
     CONTROL_TASK_GRAPH(
             "control.task-graph",
@@ -68,6 +80,23 @@ public enum PromptUseCase {
                     "feedback")),
 
     /** Skill 导入时的不可变 Manifest 编译 Prompt。 */
+    /** Loop Kernel 对候选模型输出进行结构化完成验收的 Prompt。 */
+    LOOP_COMPLETION_JUDGMENT(
+            "loop.completion-judgment",
+            "v1",
+            "classpath:prompts/loop/completion-judgment/v1/system.md",
+            "classpath:prompts/loop/completion-judgment/v1/user.md",
+            Set.of(
+                    "goal",
+                    "feedback",
+                    "actionType",
+                    "source",
+                    "finishReason",
+                    "toolCallCount",
+                    "policy",
+                    "content",
+                    "attributes")),
+
     SKILL_COMPILATION(
             "capability.skill-compilation",
             "v1",

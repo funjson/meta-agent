@@ -298,10 +298,18 @@ public class RuntimeTransactionService {
                     "LoopTree depth or node budget exhausted");
         }
 
-        stateMachine.requireTransition(
-                LoopNodeStatus.RUNNING,
-                LoopNodeStatus.WAITING_CHILDREN);
-        runtimeRepository.markLoopNodeWaitingChildren(context.loopNodeId());
+        LoopNodeStatus parentStatus =
+                runtimeRepository.findLoopNodeStatus(context.loopNodeId());
+        if (parentStatus == LoopNodeStatus.RUNNING) {
+            stateMachine.requireTransition(
+                    parentStatus,
+                    LoopNodeStatus.WAITING_CHILDREN);
+            runtimeRepository.markLoopNodeWaitingChildren(context.loopNodeId());
+        } else if (parentStatus != LoopNodeStatus.WAITING_CHILDREN) {
+            throw new RuntimeStateException(
+                    "INVALID_PARENT_LOOP_STATUS",
+                    "Child Loop can only be spawned from RUNNING or WAITING_CHILDREN parent");
+        }
         UUID childNodeId = UUID.randomUUID();
         int childDepth = context.depth() + 1;
         int childIteration = context.iterationNo() + 1;
@@ -386,6 +394,107 @@ public class RuntimeTransactionService {
     @Transactional(readOnly = true)
     public int nodeCount(UUID loopRunId) {
         return runtimeRepository.countLoopNodes(loopRunId);
+    }
+
+    /**
+     * 完成由父模型决策派生出来的单工具 Child LoopNode。
+     *
+     * <p>该节点只提交自己的 Observation 和局部完成事件，不推进 LoopRun/TaskRun；
+     * 父 LoopNode 会在聚合所有工具 Observation 后继续执行正式验收。</p>
+     *
+     * @param context Child LoopNode 上下文
+     * @param actionResult 工具调用结果
+     */
+    @Transactional
+    public void completeChildLoopNode(
+            RunExecutionContext context,
+            LoopActionResult actionResult) {
+        recordCompletedPhase(
+                context,
+                LoopPhaseType.OBSERVATION,
+                "子 LoopNode 已记录单个工具 Observation",
+                Map.of(
+                        "actionType", actionResult.actionType().name(),
+                        "source", actionResult.source()),
+                Map.of(
+                        "contentPresent",
+                        actionResult.content() != null
+                                && !actionResult.content().isBlank(),
+                        "attributes", actionResult.attributes()),
+                "OBSERVATION_RECORDED");
+        recordCompletedPhase(
+                context,
+                LoopPhaseType.EVALUATION,
+                "单工具子节点完成，等待父 LoopNode 聚合验收",
+                Map.of("scope", "TOOL_CHILD_LOOP_NODE"),
+                Map.of(
+                        "decision", "COMPLETE_CHILD_ONLY",
+                        "parentLoopNodeId",
+                        context.parentNodeId() == null
+                                ? "ROOT"
+                                : context.parentNodeId().toString()),
+                "EVALUATION_RECORDED");
+
+        String observation = json(Map.of(
+                "status", "SUCCESS",
+                "summary", "Tool child LoopNode completed",
+                "actionType", actionResult.actionType().name(),
+                "source", actionResult.source()));
+        String output = json(Map.of(
+                "content", actionResult.content() == null
+                        ? ""
+                        : actionResult.content(),
+                "actionType", actionResult.actionType().name(),
+                "source", actionResult.source(),
+                "attributes", actionResult.attributes()));
+
+        LoopNodeStatus currentStatus =
+                runtimeRepository.findLoopNodeStatus(context.loopNodeId());
+        stateMachine.requireTransition(
+                currentStatus,
+                LoopNodeStatus.COMPLETED);
+        runtimeRepository.completeLoopNode(
+                context.loopNodeId(),
+                observation,
+                output);
+        long eventOffset = runtimeRepository.insertRuntimeEvent(
+                UUID.randomUUID(),
+                context.jobId(),
+                context.taskId(),
+                context.taskRunId(),
+                "LOOP_NODE",
+                context.loopNodeId(),
+                "LOOP_NODE_COMPLETED",
+                json(Map.of(
+                        "loopRunId", context.loopRunId(),
+                        "loopNodeId", context.loopNodeId(),
+                        "parentLoopNodeId",
+                        context.parentNodeId() == null
+                                ? "ROOT"
+                                : context.parentNodeId().toString(),
+                        "childCompletionScope", "TOOL_CALL")));
+
+        UUID checkpointId = UUID.randomUUID();
+        runtimeRepository.insertCheckpoint(
+                checkpointId,
+                context.taskRunId(),
+                context.loopRunId(),
+                context.loopNodeId(),
+                runtimeRepository.nextCheckpointSequence(context.taskRunId()),
+                "CHILD_LOOP_TOOL_COMPLETE",
+                json(Map.of(
+                        "loopRunId", context.loopRunId(),
+                        "loopNodeId", context.loopNodeId(),
+                        "parentLoopNodeId",
+                        context.parentNodeId() == null
+                                ? "ROOT"
+                                : context.parentNodeId().toString(),
+                        "nodeStatus", LoopNodeStatus.COMPLETED.name(),
+                        "currentPhase", LoopPhaseType.EVALUATION.name())),
+                eventOffset);
+        runtimeRepository.updateLatestCheckpoint(
+                context.taskRunId(),
+                checkpointId);
     }
 
     /**

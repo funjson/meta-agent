@@ -18,6 +18,7 @@ classDiagram
   RuntimeExecutionService --> LoopContextBuilder
   RuntimeExecutionService --> ReActActionPlanner
   RuntimeExecutionService --> LoopCorrectionPolicy
+  RuntimeExecutionService --> LoopToolExposurePolicy
   ReActActionPlanner --> PromptRegistry
   ReActActionPlanner --> ModelProviderRegistry
   RuntimeExecutionService --> ToolExecutionService
@@ -82,12 +83,19 @@ Loop 失败并进入可观测错误链路，不能静默退回旧的硬编码 MO
 `search → read/extract → synthesize` 链路。后续可扩展目标重锚、动作重复签名、预算异常、
 LLM Judge 漂移评分等策略。
 
+`LoopToolExposurePolicy` 是工具可见性边界。混合意图会把多个 Job 放在同一个
+Conversation 下共享事实，例如“姓名”和“城市”可以同时存在；但每个 LoopNode 只能看到与当前
+Task 目标匹配的工具。比如个人介绍任务不会因为同轮还有天气任务而暴露 `weather.current`，
+天气任务会优先暴露 `weather.current` 而不是泛化 `web.search`，资料调研任务才暴露 Web
+Search/Fetch/Extract 链路。
+
 ## 类与功能关系
 
 - `RuntimeExecutionService`：ReAct 编排器，分发模型、Tool、Skill、Clarification、ChildLoop、ChildJob。
 - `RuntimeTransactionService`：阶段、事件、Checkpoint、等待态和恢复态的短事务边界。
 - `ReActActionPlanner`：fallback 结构化动作选择器，先处理已加载 Skill Manifest 的 Child 派生，再在 Provider 不支持 native tool calling 时调用模型 JSON planner。
 - `LoopCorrectionPolicy`：执行纠偏策略，阻断重复工具调用、长任务漂移等失控趋势。
+- `LoopToolExposurePolicy`：按当前 Task/Loop 目标过滤 native tools，避免混合意图里的兄弟任务工具串用。
 - `LoopCompletionPolicy`：Loop 局部验收。
 - `ClarificationNeedDetector`：检测模型输出是否其实需要用户补充信息。
 - `RuntimeClarificationContractBuilder`：为 Loop 运行时自然语言澄清兜底生成结构化合同。
@@ -105,3 +113,12 @@ LLM Judge 漂移评分等策略。
 - 扩展 Provider native tool calling、thinking mode、reasoning summary。
 - 扩展 `LoopCorrectionPolicy` 的漂移检测和纠偏动作。
 - 测试入口：Loop 策略测试、Recovery 测试、ArchUnit 依赖测试、Agent Path 投影测试。
+
+## r18 任务作用域工具边界
+
+- `RuntimeExecutionService` 在规划与 native tool schema 暴露前读取当前 Job 的
+  `TaskIntentScope`。
+- `LoopToolExposurePolicy` 以 `TaskIntentScope.allowedToolIds` 为主判断工具可见性；
+  只有历史 Job 没有作用域快照时才回退到目标文本启发式。
+- 这样同一轮混合意图里的个人介绍 Job 不会暴露 `weather.current`，天气 Job 也不会拿到
+  个人介绍 Job 的用途、风格、长度等任务参数。

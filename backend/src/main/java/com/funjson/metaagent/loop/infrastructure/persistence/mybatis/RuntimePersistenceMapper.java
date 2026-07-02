@@ -21,6 +21,9 @@ public interface RuntimePersistenceMapper {
     /** @return 加锁后的 Job 行 */
     Map<String, Object> lockJob(@Param("jobId") UUID jobId);
 
+    /** @return Job effective policy snapshot JSON */
+    String findJobPolicySnapshot(@Param("jobId") UUID jobId);
+
     /** @return 加锁后的首个 Task 行 */
     Map<String, Object> lockReadyTask(@Param("jobId") UUID jobId);
 

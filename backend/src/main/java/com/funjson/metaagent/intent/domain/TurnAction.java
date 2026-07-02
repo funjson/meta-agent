@@ -20,7 +20,45 @@ public record TurnAction(
         PendingInteractionFacts facts,
         IntentRecognition recognition,
         String userFacingMessage,
-        String auditSummary) {
+        String auditSummary,
+        String sourceSpan,
+        String originalText,
+        String canonicalGoal,
+        IntentRewrite rewrite) {
+
+    /**
+     * Backward-compatible constructor for actions that do not carry a
+     * dedicated source span or rewritten goal.
+     *
+     * @param actionType action kind
+     * @param targetId optional pending interaction target ID
+     * @param answerText optional answer text for pending interactions
+     * @param facts structured facts extracted from user text
+     * @param recognition optional intent recognition backing this action
+     * @param userFacingMessage optional user-facing message
+     * @param auditSummary audit summary for Agent Path and ControlDecision
+     */
+    public TurnAction(
+            TurnActionType actionType,
+            UUID targetId,
+            String answerText,
+            PendingInteractionFacts facts,
+            IntentRecognition recognition,
+            String userFacingMessage,
+            String auditSummary) {
+        this(
+                actionType,
+                targetId,
+                answerText,
+                facts,
+                recognition,
+                userFacingMessage,
+                auditSummary,
+                "",
+                "",
+                "",
+                IntentRewrite.none());
+    }
 
     /**
      * Normalizes nullable textual and fact fields.
@@ -32,6 +70,10 @@ public record TurnAction(
                 ? ""
                 : userFacingMessage.trim();
         auditSummary = auditSummary == null ? "" : auditSummary.trim();
+        sourceSpan = sourceSpan == null ? "" : sourceSpan.trim();
+        originalText = originalText == null ? "" : originalText.trim();
+        canonicalGoal = canonicalGoal == null ? "" : canonicalGoal.trim();
+        rewrite = rewrite == null ? IntentRewrite.none() : rewrite;
     }
 
     /**
@@ -56,6 +98,30 @@ public record TurnAction(
      * Creates an action that creates a Job from an intent recognition.
      */
     public static TurnAction createJob(IntentRecognition recognition) {
+        return createJob(
+                recognition,
+                "",
+                "",
+                "",
+                IntentRewrite.none());
+    }
+
+    /**
+     * Creates an action that creates a Job from a rewritten task goal.
+     *
+     * @param recognition intent recognition backing the Job
+     * @param sourceSpan source text span from the user turn
+     * @param originalText original text used for this action
+     * @param canonicalGoal normalized task-level goal
+     * @param rewrite rewrite audit metadata
+     * @return executable CREATE_JOB action
+     */
+    public static TurnAction createJob(
+            IntentRecognition recognition,
+            String sourceSpan,
+            String originalText,
+            String canonicalGoal,
+            IntentRewrite rewrite) {
         return new TurnAction(
                 TurnActionType.CREATE_JOB,
                 null,
@@ -63,7 +129,11 @@ public record TurnAction(
                 PendingInteractionFacts.empty(),
                 recognition,
                 "",
-                recognition.decisionSummary());
+                recognition.decisionSummary(),
+                sourceSpan,
+                originalText,
+                canonicalGoal,
+                rewrite);
     }
 
     /**
@@ -78,5 +148,21 @@ public record TurnAction(
                 recognition,
                 recognition.decisionSummary(),
                 recognition.decisionSummary());
+    }
+
+    /**
+     * Returns the stable text that should initialize a Job.
+     *
+     * @param fallback full user turn text when no canonical goal exists
+     * @return canonical goal, action original text, or fallback in that order
+     */
+    public String jobRequestText(String fallback) {
+        if (!canonicalGoal.isBlank()) {
+            return canonicalGoal;
+        }
+        if (!originalText.isBlank()) {
+            return originalText;
+        }
+        return fallback == null ? "" : fallback.trim();
     }
 }

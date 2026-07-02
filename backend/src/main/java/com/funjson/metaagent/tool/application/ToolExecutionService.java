@@ -145,7 +145,7 @@ public class ToolExecutionService {
             ToolInvocationCommand command,
             LoopActionType actionType) {
         return LoopActionResult.fromTool(
-                invokeInternal(command, context),
+                invokeInternal(command, context, true),
                 actionType);
     }
 
@@ -156,6 +156,26 @@ public class ToolExecutionService {
     protected ToolResult invokeInternal(
             ToolInvocationCommand command,
             RunExecutionContext context) {
+        return invokeInternal(command, context, false);
+    }
+
+    /**
+     * 执行 Tool 并维护审计状态。
+     *
+     * <p>Loop 内部调用和直接 API 调用的失败语义不同：Loop 需要把可恢复工具失败
+     * 作为 Observation 交给模型纠偏；直接 API 调用仍保留异常，方便开发和验收发现
+     * 配置问题。该边界避免外部系统异常绕过模型，直接进入用户可见聊天消息。</p>
+     *
+     * @param command Tool 调用命令
+     * @param context 可选 Loop 上下文
+     * @param returnFailureObservation 是否把可恢复失败返回为 ToolResult
+     * @return ToolResult
+     */
+    @Transactional
+    protected ToolResult invokeInternal(
+            ToolInvocationCommand command,
+            RunExecutionContext context,
+            boolean returnFailureObservation) {
         var existing = toolStore.findInvocationByIdempotencyKey(
                 command.idempotencyKey());
         if (existing.isPresent()) {
@@ -188,29 +208,81 @@ public class ToolExecutionService {
                     json(result.attributes()));
             return result;
         } catch (RuntimeException failure) {
-            Map<String, Object> failureAttributes = new LinkedHashMap<>();
-            failureAttributes.put("toolId", command.toolId());
-            failureAttributes.put("toolType", toolType);
-            failureAttributes.put(
-                    "errorType",
-                    failure.getClass().getSimpleName());
-            failureAttributes.put(
-                    "message",
-                    failure.getMessage() == null
-                            ? "tool failed"
-                            : failure.getMessage());
-            ToolResult result = new ToolResult(
+            ToolResult result = failedToolResult(
                     invocationId,
-                    false,
-                    failure.getMessage(),
-                    "",
-                    failureAttributes);
+                    command.toolId(),
+                    toolType,
+                    failure);
             toolStore.fail(
                     invocationId,
                     result.summary(),
                     json(result.attributes()));
+            if (returnFailureObservation
+                    && canReturnFailureObservation(command, context)) {
+                // 工具失败已经写入审计表；Loop 继续以 Observation 形式推进，
+                // 后续由模型包装为用户可见说明或选择新的纠偏动作。
+                return result;
+            }
             throw failure;
         }
+    }
+
+    /**
+     * 判断工具失败是否可以作为 Loop Observation 返回。
+     *
+     * <p>clarification.request 是控制协议工具，失败通常意味着数据库或状态机异常，
+     * 模型无法自行修复，所以仍作为致命错误抛出。</p>
+     *
+     * @param command Tool 调用命令
+     * @param context Loop 上下文
+     * @return true 表示可以交给 Loop 纠偏
+     */
+    private boolean canReturnFailureObservation(
+            ToolInvocationCommand command,
+            RunExecutionContext context) {
+        return context != null
+                && !"clarification.request".equals(command.toolId());
+    }
+
+    /**
+     * 构造模型可消费、但不应直接展示给用户的失败 Observation。
+     *
+     * @param invocationId ToolInvocation ID
+     * @param toolId Tool ID
+     * @param toolType Tool 类型
+     * @param failure 原始异常
+     * @return 失败 ToolResult
+     */
+    private ToolResult failedToolResult(
+            UUID invocationId,
+            String toolId,
+            String toolType,
+            RuntimeException failure) {
+        String errorType = failure.getClass().getSimpleName();
+        String message = failure.getMessage() == null
+                ? "tool failed"
+                : failure.getMessage();
+        Map<String, Object> failureAttributes = new LinkedHashMap<>();
+        failureAttributes.put("toolId", toolId);
+        failureAttributes.put("toolType", toolType);
+        failureAttributes.put("success", false);
+        failureAttributes.put("errorType", errorType);
+        failureAttributes.put("message", message);
+        String content = """
+                工具调用失败，当前结果只能作为内部 Observation 使用。
+                toolId: %s
+                errorType: %s
+                errorMessage: %s
+
+                请不要把异常原文直接展示给用户；请基于上下文选择重试、换来源、
+                降级回答，或用自然语言说明当前无法完成的部分。
+                """.formatted(toolId, errorType, message).trim();
+        return new ToolResult(
+                invocationId,
+                false,
+                "Tool call failed and was captured as Observation",
+                content,
+                failureAttributes);
     }
 
     /**
@@ -890,6 +962,7 @@ public class ToolExecutionService {
                 result.attributes());
         attributes.putIfAbsent("toolId", toolId);
         attributes.putIfAbsent("toolType", resolveToolType(toolId).name());
+        attributes.putIfAbsent("success", result.success());
         return new ToolResult(
                 result.invocationId(),
                 result.success(),
@@ -1187,11 +1260,27 @@ public class ToolExecutionService {
                 || "null".equals(resultJson)
                 ? Map.of()
                 : readMap(resultJson);
+        boolean completed = "COMPLETED".equals(row.get("status"));
+        boolean success = completed
+                && Boolean.parseBoolean(
+                        String.valueOf(attributes.getOrDefault(
+                                "success",
+                                "true")));
+        String content = String.valueOf(attributes.getOrDefault(
+                "stdout",
+                ""));
+        if (!success && content.isBlank()) {
+            content = String.valueOf(attributes.getOrDefault(
+                    "message",
+                    row.getOrDefault("errorMessage", "")));
+        }
         return new ToolResult(
                 UUID.fromString(String.valueOf(row.get("id"))),
-                "COMPLETED".equals(row.get("status")),
-                "Idempotent tool invocation reused",
-                String.valueOf(attributes.getOrDefault("stdout", "")),
+                success,
+                completed
+                        ? "Idempotent tool invocation reused"
+                        : "Idempotent failed tool invocation reused",
+                content,
                 attributes);
     }
 

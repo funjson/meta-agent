@@ -42,6 +42,12 @@
         FOR UPDATE
     </select>
 
+    <select id="findJobPolicySnapshot" resultType="string">
+        SELECT CAST(effective_policy_snapshot AS CHAR)
+        FROM job
+        WHERE id = #{jobId,typeHandler=com.funjson.metaagent.common.persistence.mybatis.UuidBinaryTypeHandler}
+    </select>
+
     <select id="lockReadyTask" resultType="map">
         SELECT
             BIN_TO_UUID(candidate.id) AS id,

@@ -1,8 +1,10 @@
 package com.funjson.metaagent.tool;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -17,6 +19,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.funjson.metaagent.capability.application.CapabilityApplicationService;
 import com.funjson.metaagent.clarification.application.ClarificationService;
 import com.funjson.metaagent.file.application.FileAttachmentService;
+import com.funjson.metaagent.loop.domain.LoopActionType;
+import com.funjson.metaagent.loop.domain.LoopRunParentType;
+import com.funjson.metaagent.loop.domain.RunExecutionContext;
+import com.funjson.metaagent.runtime.domain.RuntimeStateException;
 import com.funjson.metaagent.tool.application.ToolExecutionService;
 import com.funjson.metaagent.tool.application.ToolInvocationCommand;
 import com.funjson.metaagent.tool.application.port.out.ToolStore;
@@ -200,5 +206,107 @@ class ToolExecutionServiceWebResearchTest {
                 eq(2));
         assertThat(contextCaptor.getValue().loopNodeId()).isEqualTo(loopNodeId);
         assertThat(view.result()).containsKey("sourceDocumentId");
+    }
+
+    @Test
+    void loopWebFetchFailureBecomesRecoverableObservation() {
+        ToolStore toolStore = mock(ToolStore.class);
+        WebSearchService webSearchService = mock(WebSearchService.class);
+        ToolExecutionService service = new ToolExecutionService(
+                toolStore,
+                mock(CapabilityApplicationService.class),
+                mock(ClarificationService.class),
+                mock(FileAttachmentService.class),
+                webSearchService,
+                mock(WebResearchStore.class),
+                mock(WeatherService.class),
+                new ObjectMapper());
+        RunExecutionContext context = context();
+        when(toolStore.findInvocationByIdempotencyKey("loop-web-fetch-fail"))
+                .thenReturn(Optional.empty());
+        when(webSearchService.fetch("https://example.com/timeout", 8000))
+                .thenThrow(new RuntimeStateException(
+                        "WEB_FETCH_FAILED",
+                        "Unable to fetch web document: HTTP connect timed out"));
+
+        var result = service.invokeForLoop(
+                context,
+                new ToolInvocationCommand(
+                        "web.fetch",
+                        Map.of("url", "https://example.com/timeout"),
+                        "loop-web-fetch-fail",
+                        context.jobId(),
+                        context.taskId(),
+                        context.taskRunId(),
+                        context.loopRunId(),
+                        context.loopNodeId()),
+                LoopActionType.TOOL_CALL);
+
+        assertThat(result.attributes())
+                .containsEntry("toolId", "web.fetch")
+                .containsEntry("success", false)
+                .containsEntry("errorType", "RuntimeStateException");
+        assertThat(result.content())
+                .contains("工具调用失败")
+                .contains("不要把异常原文直接展示给用户");
+        verify(toolStore).fail(
+                any(UUID.class),
+                eq("Tool call failed and was captured as Observation"),
+                anyString());
+    }
+
+    @Test
+    void directWebFetchInvocationStillThrowsForApiCallers() {
+        ToolStore toolStore = mock(ToolStore.class);
+        WebSearchService webSearchService = mock(WebSearchService.class);
+        ToolExecutionService service = new ToolExecutionService(
+                toolStore,
+                mock(CapabilityApplicationService.class),
+                mock(ClarificationService.class),
+                mock(FileAttachmentService.class),
+                webSearchService,
+                mock(WebResearchStore.class),
+                mock(WeatherService.class),
+                new ObjectMapper());
+        when(toolStore.findInvocationByIdempotencyKey("api-web-fetch-fail"))
+                .thenReturn(Optional.empty());
+        when(webSearchService.fetch("https://example.com/timeout", 8000))
+                .thenThrow(new RuntimeStateException(
+                        "WEB_FETCH_FAILED",
+                        "Unable to fetch web document: HTTP connect timed out"));
+
+        assertThatThrownBy(() -> service.invoke(new ToolInvocationCommand(
+                "web.fetch",
+                Map.of("url", "https://example.com/timeout"),
+                "api-web-fetch-fail",
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                UUID.randomUUID())))
+                .isInstanceOf(RuntimeStateException.class);
+    }
+
+    /**
+     * @return 测试用 Loop 上下文
+     */
+    private RunExecutionContext context() {
+        UUID taskRunId = UUID.randomUUID();
+        return new RunExecutionContext(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                taskRunId,
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                null,
+                0,
+                1,
+                LoopRunParentType.TASK_RUN,
+                taskRunId,
+                0,
+                "fake",
+                "读取网络来源",
+                "",
+                null);
     }
 }

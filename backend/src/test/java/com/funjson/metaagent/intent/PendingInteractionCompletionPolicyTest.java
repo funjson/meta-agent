@@ -124,6 +124,61 @@ class PendingInteractionCompletionPolicyTest {
     }
 
     @Test
+    void defaultConsentSatisfiesSoftSlotsButKeepsBlockingSlotsStrict() {
+        String contract = """
+                {
+                  "version": "v1",
+                  "slots": [
+                    {"key": "name", "label": "姓名", "required": true, "requiredLevel": "BLOCKING", "defaultable": false, "aliases": ["姓名", "name"]},
+                    {"key": "purpose", "label": "使用场景", "required": true, "requiredLevel": "SOFT", "defaultable": true, "aliases": ["purpose", "用途", "场景"]},
+                    {"key": "style", "label": "风格", "required": true, "requiredLevel": "SOFT", "defaultable": true, "aliases": ["style", "风格"]}
+                  ]
+                }
+                """;
+
+        var completion = policy.assess(
+                "请补充姓名、使用场景和风格。",
+                "低风险生成任务缺少偏好字段",
+                contract,
+                new PendingInteractionFacts(
+                        Map.of("userAcceptedDefaults", "true"),
+                        java.util.List.of("purpose", "style"),
+                        "用户说就这些，剩余按默认处理"),
+                Map.of("name", "冯建松"));
+
+        assertThat(completion.complete()).isTrue();
+        assertThat(completion.missingFields()).isEmpty();
+    }
+
+    @Test
+    void defaultConsentCanSatisfyOverStrictResumeQualitySlots() {
+        String contract = """
+                {
+                  "slots": [
+                    {"key": "full_name", "label": "姓名", "required": true, "defaultable": false, "requiredLevel": "BLOCKING"},
+                    {"key": "target_position", "label": "目标职位或行业", "required": true, "defaultable": true, "requiredLevel": "SOFT", "aliases": ["应聘职位", "求职意向"]},
+                    {"key": "work_experience", "label": "工作经历", "required": true, "defaultable": false, "requiredLevel": "BLOCKING", "aliases": ["工作履历"]},
+                    {"key": "education", "label": "教育背景", "required": true, "defaultable": false, "requiredLevel": "BLOCKING", "aliases": ["学历", "毕业院校"]},
+                    {"key": "contact_info", "label": "联系方式", "required": true, "defaultable": true, "requiredLevel": "SOFT", "aliases": ["电话", "邮箱"]}
+                  ]
+                }
+                """;
+
+        var completion = policy.assess(
+                "为了帮您生成一份合适的简历，请先告诉我姓名、目标职位、联系方式、工作经历和教育背景。",
+                "生成个人简历缺少信息",
+                contract,
+                new PendingInteractionFacts(
+                        Map.of("userAcceptedDefaults", "true"),
+                        java.util.List.of("work_experience", "education"),
+                        "用户说随意，允许默认处理"),
+                Map.of("full_name", "冯佳松"));
+
+        assertThat(completion.complete()).isTrue();
+        assertThat(completion.missingFields()).isEmpty();
+    }
+
+    @Test
     void mapsModelGeneratedContractSlotsToStableFactAliases() {
         String contract = """
                 {

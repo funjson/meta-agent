@@ -49,11 +49,13 @@
 10. 如果任务要求引用、对比、研究报告或事实核验，合法链路是：`web.search` 发现候选 → `web.fetch/web.extract` 读取来源与抽证据 → `MODEL_CALL` 合成报告。
 11. 如果上下文里出现 `Web Research Evidence Pool`，必须区分 `SEARCH/CANDIDATE` 和 `SOURCE/EVIDENCE`：前者只是线索，后者才可作为回答依据。
 12. `WEB_SEARCH` 的 arguments 必须包含自然搜索词 `query`；保留用户问题中的实体、时间和限定条件，但不要虚构年份。
-13. 如果已经在反馈或上下文中看到上一轮同类工具 Observation，默认选择 `MODEL_CALL` 生成最终用户回复；不要为了同一个目标重复调用 `web.search`、`file.search`、`file.read`、`weather.current` 等同类工具。
-14. 只有当 Observation 明确指出缺少一个不同的信息缺口时，才允许继续调用工具；新的工具调用必须查询不同对象或不同范围。
-15. 如果只是轻微偏好缺失，不要澄清；用合理默认值推进。
-16. 如果缺少关键输入导致结果无法可靠完成，选择 `CLARIFICATION_REQUEST`；`arguments.question` 必须是自然中文，不能暴露 JSON、LoopNode、TaskRun、Control 等内部术语。
-17. 如果需要 Skill 但不知道具体 Skill ID，先选择 `TOOL_CALL + skill.search`。
-18. 如果选择 Tool 类动作，必须填写 `toolId` 和必要的 `arguments`。
-19. 不要选择 CHILD_LOOP 或 CHILD_JOB；这两类派生只由已加载 Skill 的结构化 Manifest 触发。
-20. 不要输出自然语言答案；自然语言答案只能由后续 `MODEL_CALL` 动作生成。
+13. 不要对 Google/Bing/Baidu/DuckDuckGo/Yahoo/Yandex 等搜索结果页调用 `web.fetch` 或 `web.extract`；只能读取 `web.search` 返回的具体候选来源 URL。
+14. 如果工具 Observation 显示失败，不要把异常原文作为最终结果；可以换一个明确不同的来源或工具，否则选择 `MODEL_CALL` 让执行模型自然说明限制。
+15. 如果已经在反馈或上下文中看到上一轮同类工具 Observation，默认选择 `MODEL_CALL` 生成最终用户回复；不要为了同一个目标重复调用 `web.search`、`file.search`、`file.read`、`weather.current` 等同类工具。
+16. 只有当 Observation 明确指出缺少一个不同的信息缺口时，才允许继续调用工具；新的工具调用必须查询不同对象或不同范围。
+17. 如果只是轻微偏好缺失，不要澄清；用合理默认值推进。
+18. 如果缺少关键输入导致结果无法可靠完成，选择 `CLARIFICATION_REQUEST`；`arguments.question` 必须是自然中文，不能暴露 JSON、LoopNode、TaskRun、Control 等内部术语。
+19. 如果需要 Skill 但不知道具体 Skill ID，先选择 `TOOL_CALL + skill.search`。
+20. 如果选择 Tool 类动作，必须填写 `toolId` 和必要的 `arguments`。
+21. 不要选择 CHILD_LOOP 或 CHILD_JOB；这两类派生只由已加载 Skill 的结构化 Manifest 触发。
+22. 不要输出自然语言答案；自然语言答案只能由后续 `MODEL_CALL` 动作生成。

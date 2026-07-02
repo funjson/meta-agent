@@ -1,9 +1,12 @@
 package com.funjson.metaagent.control.application;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -50,6 +53,7 @@ public class ControlActionExecutor {
 
     private final ConversationStore conversationStore;
     private final ControlTurnStore controlTurnStore;
+    private final ControlTurnGraphCompiler graphCompiler;
     private final ControlJobInitializationService jobInitializationService;
     private final JobService jobService;
     private final ClarificationService clarificationService;
@@ -65,6 +69,7 @@ public class ControlActionExecutor {
      *
      * @param conversationStore Conversation persistence port
      * @param controlTurnStore ControlTurn persistence port
+     * @param graphCompiler turn graph compiler
      * @param jobInitializationService root Job initialization service
      * @param jobService Job service
      * @param clarificationService Clarification service
@@ -78,6 +83,7 @@ public class ControlActionExecutor {
     public ControlActionExecutor(
             ConversationStore conversationStore,
             ControlTurnStore controlTurnStore,
+            ControlTurnGraphCompiler graphCompiler,
             ControlJobInitializationService jobInitializationService,
             JobService jobService,
             ClarificationService clarificationService,
@@ -89,6 +95,7 @@ public class ControlActionExecutor {
             ObjectMapper objectMapper) {
         this.conversationStore = conversationStore;
         this.controlTurnStore = controlTurnStore;
+        this.graphCompiler = graphCompiler;
         this.jobInitializationService = jobInitializationService;
         this.jobService = jobService;
         this.clarificationService = clarificationService;
@@ -111,13 +118,29 @@ public class ControlActionExecutor {
             ControlTurnExecutionContext context,
             TurnRoutingPlan plan) {
         ExecutionState state = new ExecutionState();
-        for (TurnAction action : plan.actions()) {
-            executeAction(context, plan, action, state);
-            // A user-visible blocking response, such as an incomplete
-            // clarification, must stop the remaining actions in this turn.
-            if (state.stopActions) {
+        ControlExecutionPlan executionPlan = graphCompiler.compile(plan);
+        for (ControlExecutionNode node : executionPlan.nodes()) {
+            if (state.stopAllActions) {
                 break;
             }
+            if (executionPlan.blockedByUpstream(
+                    node.nodeId(),
+                    state.blockedNodeIds)) {
+                continue;
+            }
+            executeAction(context, plan, node, state);
+        }
+        if (state.immediateAssistantJob != null) {
+            // Keep the immediate clarification message attached to the Job
+            // that is still waiting, even if later mixed actions created and
+            // dispatched another independent Job.
+            state.representativeJob = state.immediateAssistantJob;
+            conversationStore.linkMessageToJob(
+                    context.userMessageId(),
+                    state.immediateAssistantJob.id());
+            controlTurnStore.attachJob(
+                    context.controlTurnId(),
+                    state.immediateAssistantJob.id());
         }
         IntentRecognition recognition = decisionRecognition(plan, state);
         controlTurnStore.insertDecision(
@@ -155,28 +178,43 @@ public class ControlActionExecutor {
     private void executeAction(
             ControlTurnExecutionContext context,
             TurnRoutingPlan plan,
-            TurnAction action,
+            ControlExecutionNode node,
             ExecutionState state) {
+        TurnAction action = node.action();
         switch (action.actionType()) {
             case EXPLAIN_PENDING_REQUIREMENTS ->
-                    explainPendingRequirements(context, action, state);
+                    explainPendingRequirements(
+                            context,
+                            node.nodeId(),
+                            action,
+                            state);
             case ASK_DISAMBIGUATION ->
-                    requirePendingInteractionDisambiguation(context, action, state);
+                    requirePendingInteractionDisambiguation(
+                            context,
+                            node.nodeId(),
+                            action,
+                            state);
             case CLARIFICATION_NO_TARGET ->
-                    clarificationAnswerWithoutTarget(action, state);
+                    clarificationAnswerWithoutTarget(
+                            node.nodeId(),
+                            action,
+                            state);
             case ANSWER_PENDING ->
-                    answerClarification(context, action, state);
+                    answerClarification(
+                            context,
+                            node.nodeId(),
+                            action,
+                            state);
             case CREATE_JOB ->
-                    createJob(context, action, state);
+                    createJob(
+                            context,
+                            node,
+                            state);
             case CONTROL_MESSAGE -> {
                 state.primaryRecognition = action.recognition();
-                state.auditParts.add(action.auditSummary());
             }
             default -> throw new IllegalStateException(
                     "Unsupported turn action: " + action.actionType());
-        }
-        if (plan.mixed()) {
-            state.auditParts.add(action.actionType().name());
         }
     }
 
@@ -185,8 +223,9 @@ public class ControlActionExecutor {
      */
     private void createJob(
             ControlTurnExecutionContext context,
-            TurnAction action,
+            ControlExecutionNode node,
             ExecutionState state) {
+        TurnAction action = node.action();
         IntentRecognition recognition = action.recognition();
         if (recognition == null) {
             throw new IllegalArgumentException("CREATE_JOB requires recognition");
@@ -194,9 +233,14 @@ public class ControlActionExecutor {
         var initializedJob = jobInitializationService.initializeRootJob(
                 context.conversation(),
                 context.userMessageId(),
-                context.content(),
                 context.request(),
-                recognition,
+                new JobInitializationSpec(
+                        node.nodeId(),
+                        action.sourceSpan(),
+                        action.originalText(),
+                        action.canonicalGoal(),
+                        node.taskType(),
+                        recognition),
                 context.modelClassificationAllowed());
         JobView job = initializedJob.job();
         state.representativeJob = job;
@@ -213,8 +257,12 @@ public class ControlActionExecutor {
             return;
         }
         clarificationService.findOpenByJob(job.id()).ifPresent(clarification -> {
-            state.immediateAssistantMessage = clarification.question();
-            state.immediateAssistantMessageType = "CLARIFICATION_QUESTION";
+            appendImmediateAssistantMessage(
+                    state,
+                    job,
+                    clarification.question(),
+                    "CLARIFICATION_QUESTION");
+            state.blockedNodeIds.add(node.nodeId());
         });
     }
 
@@ -223,6 +271,7 @@ public class ControlActionExecutor {
      */
     private void explainPendingRequirements(
             ControlTurnExecutionContext context,
+            String nodeId,
             TurnAction action,
             ExecutionState state) {
         ClarificationRequest clarification = openClarification(
@@ -243,10 +292,12 @@ public class ControlActionExecutor {
                 false,
                 IntentRiskLevel.LOW,
                 List.of("pending-interaction-help"));
-        state.immediateAssistantMessage = state.primaryRecognition
-                .decisionSummary();
-        state.immediateAssistantMessageType = "CLARIFICATION_QUESTION";
-        state.stopActions = true;
+        appendImmediateAssistantMessage(
+                state,
+                job,
+                state.primaryRecognition.decisionSummary(),
+                "CLARIFICATION_QUESTION");
+        state.blockedNodeIds.add(nodeId);
     }
 
     /**
@@ -254,6 +305,7 @@ public class ControlActionExecutor {
      */
     private void requirePendingInteractionDisambiguation(
             ControlTurnExecutionContext context,
+            String nodeId,
             TurnAction action,
             ExecutionState state) {
         String intro = action.userFacingMessage().isBlank()
@@ -285,13 +337,15 @@ public class ControlActionExecutor {
         state.immediateAssistantMessage = state.primaryRecognition
                 .decisionSummary();
         state.immediateAssistantMessageType = "CLARIFICATION_DISAMBIGUATION";
-        state.stopActions = true;
+        state.blockedNodeIds.add(nodeId);
+        state.stopAllActions = true;
     }
 
     /**
      * Handles a clarification-like answer when there is no open target.
      */
     private void clarificationAnswerWithoutTarget(
+            String nodeId,
             TurnAction action,
             ExecutionState state) {
         IntentRecognition recognition = action.recognition();
@@ -314,7 +368,8 @@ public class ControlActionExecutor {
         state.immediateAssistantMessage = state.primaryRecognition
                 .decisionSummary();
         state.immediateAssistantMessageType = "CLARIFICATION_DISAMBIGUATION";
-        state.stopActions = true;
+        state.blockedNodeIds.add(nodeId);
+        state.stopAllActions = true;
     }
 
     /**
@@ -323,14 +378,17 @@ public class ControlActionExecutor {
      */
     private void answerClarification(
             ControlTurnExecutionContext context,
+            String nodeId,
             TurnAction action,
             ExecutionState state) {
         ClarificationRequest clarification = openClarification(
                 context.envelope(),
                 action.targetId());
-        PendingInteractionFacts safeFacts = action.facts() == null
+        PendingInteractionFacts safeFacts = enrichDefaultConsent(
+                action.answerText(),
+                action.facts() == null
                 ? PendingInteractionFacts.empty()
-                : action.facts();
+                : action.facts());
         if (clarification.jobId() == null) {
             throw new RuntimeStateException(
                     "CLARIFICATION_RESUME_TARGET_UNSUPPORTED",
@@ -346,7 +404,13 @@ public class ControlActionExecutor {
                                 clarification,
                                 context.envelope()));
         if (!completion.complete()) {
-            keepClarificationOpen(context, action, clarification, completion, state);
+            keepClarificationOpen(
+                    context,
+                    nodeId,
+                    action,
+                    clarification,
+                    completion,
+                    state);
             return;
         }
         completeClarification(context, action, clarification, completion, state);
@@ -357,6 +421,7 @@ public class ControlActionExecutor {
      */
     private void keepClarificationOpen(
             ControlTurnExecutionContext context,
+            String nodeId,
             TurnAction action,
             ClarificationRequest clarification,
             PendingInteractionCompletion completion,
@@ -374,7 +439,7 @@ public class ControlActionExecutor {
                         completion.mergedFacts(),
                         completion.missingFields(),
                         completion.answerSummary()));
-        rememberFacts(context, completion.mergedFacts());
+        rememberFacts(context, waitingJob, completion.mergedFacts());
         state.representativeJob = waitingJob;
         conversationStore.linkMessageToJob(context.userMessageId(), waitingJob.id());
         conversationStore.activateJobAndRetitle(
@@ -386,11 +451,16 @@ public class ControlActionExecutor {
                 waitingJob,
                 "已记录补充信息，但澄清合同仍缺少："
                         + String.join(",", completion.missingFields()));
-        state.immediateAssistantMessage = clarificationResponseRenderer.incomplete(
-                clarification,
-                completion);
-        state.immediateAssistantMessageType = "CLARIFICATION_QUESTION";
-        state.stopActions = true;
+        appendImmediateAssistantMessage(
+                state,
+                waitingJob,
+                clarificationResponseRenderer.incomplete(
+                        clarification,
+                        completion),
+                "CLARIFICATION_QUESTION");
+        // Only dependency edges should propagate this waiting state. Independent
+        // sibling nodes in the same user turn can still be executed.
+        state.blockedNodeIds.add(nodeId);
     }
 
     /**
@@ -431,8 +501,8 @@ public class ControlActionExecutor {
                     completion.mergedFacts(),
                     completion.missingFields(),
                     completion.answerSummary()));
-            rememberFacts(context, completion.mergedFacts());
             job = jobService.get(clarification.jobId());
+            rememberFacts(context, job, completion.mergedFacts());
             state.resumeTaskRunId = clarification.taskRunId();
             state.dispatches.add(ControlDispatchCommand.resume(
                     job,
@@ -452,7 +522,7 @@ public class ControlActionExecutor {
                     completion.mergedFacts(),
                     completion.missingFields(),
                     completion.answerSummary()));
-            rememberFacts(context, completion.mergedFacts());
+            rememberFacts(context, job, completion.mergedFacts());
             if (hasReadyTask(job)) {
                 state.dispatches.add(ControlDispatchCommand.start(job));
             }
@@ -551,9 +621,11 @@ public class ControlActionExecutor {
             ContextEnvelope envelope) {
         Map<String, String> facts = new LinkedHashMap<>();
         if (envelope != null) {
-            envelope.conversationFacts().forEach(fact -> putContextFact(
-                    facts,
-                    fact));
+            envelope.conversationFacts().stream()
+                    .filter(fact -> relevantClarificationFact(target, fact))
+                    .forEach(fact -> putContextFact(
+                            facts,
+                            fact));
         }
         putResolutionFacts(facts, target.resolutionJson());
         if (envelope != null) {
@@ -581,6 +653,70 @@ public class ControlActionExecutor {
         }
         return left.taskRunId() != null
                 && left.taskRunId().equals(right.taskRunId());
+    }
+
+    /**
+     * Checks whether a durable fact may contribute to a clarification target.
+     *
+     * <p>Job-scoped facts can only satisfy the same Job. Conversation-scoped
+     * facts are limited to stable user facts or fields explicitly present in
+     * the target contract, preventing sibling task parameters from completing
+     * the wrong pending interaction.</p>
+     */
+    private boolean relevantClarificationFact(
+            ClarificationRequest target,
+            ContextFact fact) {
+        String factScope = normalizeText(fact.scope());
+        if (target.jobId() != null
+                && factScope.equals(normalizeText("JOB:" + target.jobId()))) {
+            return true;
+        }
+        if (!"conversation".equals(factScope)) {
+            return false;
+        }
+        String key = normalizeText(fact.key());
+        return stableUserFact(key) || contractContainsField(target, key);
+    }
+
+    /**
+     * Checks whether a key is safe to reuse across tasks.
+     */
+    private boolean stableUserFact(String key) {
+        return "name".equals(key)
+                || "username".equals(key)
+                || "preferredname".equals(key)
+                || "nickname".equals(key);
+    }
+
+    /**
+     * Checks whether the clarification contract mentions a fact key.
+     */
+    private boolean contractContainsField(
+            ClarificationRequest target,
+            String key) {
+        try {
+            JsonNode slots = objectMapper.readTree(
+                            target.contractJson() == null
+                                    || target.contractJson().isBlank()
+                                            ? "{}"
+                                            : target.contractJson())
+                    .path("slots");
+            if (!slots.isArray()) {
+                return false;
+            }
+            for (JsonNode slot : slots) {
+                String slotText = normalizeText("%s %s %s".formatted(
+                        slot.path("key").asText(""),
+                        slot.path("label").asText(""),
+                        slot.path("aliases").toString()));
+                if (slotText.contains(key)) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (JsonProcessingException exception) {
+            return false;
+        }
     }
 
     /**
@@ -614,12 +750,75 @@ public class ControlActionExecutor {
      */
     private void rememberFacts(
             ControlTurnExecutionContext context,
+            JobView job,
             Map<String, String> facts) {
-        conversationFactService.rememberFacts(
+        conversationFactService.rememberJobScopedFacts(
                 context.conversation().id(),
                 context.userMessageId(),
                 "CLARIFICATION_ANSWER",
+                job == null ? null : job.id(),
                 facts);
+    }
+
+    /**
+     * Adds userAcceptedDefaults when the raw answer clearly says the user does
+     * not want to provide more optional information.
+     */
+    private PendingInteractionFacts enrichDefaultConsent(
+            String answerText,
+            PendingInteractionFacts facts) {
+        if (!isDefaultConsent(answerText)
+                || hasDefaultConsentFact(facts.facts())) {
+            return facts;
+        }
+        Map<String, String> mergedFacts = new LinkedHashMap<>(facts.facts());
+        mergedFacts.put("userAcceptedDefaults", "true");
+        String summary = facts.answerSummary().isBlank()
+                ? "用户接受剩余可默认字段按默认处理"
+                : facts.answerSummary() + "；用户接受剩余可默认字段按默认处理";
+        return new PendingInteractionFacts(
+                mergedFacts,
+                facts.missingFields(),
+                summary);
+    }
+
+    /**
+     * Checks whether structured facts already include default consent.
+     */
+    private boolean hasDefaultConsentFact(Map<String, String> facts) {
+        return facts.entrySet().stream()
+                .anyMatch(entry -> "useraccepteddefaults".equals(
+                        normalizeText(entry.getKey()))
+                        && "true".equals(normalizeText(entry.getValue())));
+    }
+
+    /**
+     * Recognizes natural phrases such as “就这些吧” as default consent.
+     */
+    private boolean isDefaultConsent(String answerText) {
+        String normalized = normalizeText(answerText);
+        return normalized.contains("默认即可")
+                || normalized.contains("默认")
+                || normalized.contains("你看着办")
+                || normalized.contains("随意")
+                || normalized.contains("随便")
+                || normalized.contains("都行")
+                || normalized.contains("就这些")
+                || normalized.contains("就这样")
+                || normalized.contains("没有了")
+                || normalized.contains("不补充了")
+                || normalized.contains("其他随意");
+    }
+
+    /**
+     * Normalizes user text for conservative default-consent matching.
+     */
+    private String normalizeText(String value) {
+        return value == null
+                ? ""
+                : value.replaceAll("\\s+", "")
+                        .trim()
+                        .toLowerCase(Locale.ROOT);
     }
 
     /**
@@ -674,6 +873,44 @@ public class ControlActionExecutor {
     }
 
     /**
+     * Adds a user-visible immediate message to the current Control turn.
+     *
+     * <p>A mixed turn can create multiple Jobs that all need clarification.
+     * The Conversation message model currently supports one immediate assistant
+     * message per turn, so Control aggregates those questions into one message
+     * instead of overwriting earlier questions.</p>
+     */
+    private void appendImmediateAssistantMessage(
+            ExecutionState state,
+            JobView job,
+            String message,
+            String messageType) {
+        if (message == null || message.isBlank()) {
+            return;
+        }
+        if (state.immediateAssistantMessage == null
+                || state.immediateAssistantMessage.isBlank()) {
+            state.immediateAssistantMessage = message.trim();
+            state.immediateAssistantMessageType = messageType;
+            state.immediateAssistantJob = job;
+            return;
+        }
+        state.immediateAssistantMessage = """
+                %s
+
+                ---
+
+                %s
+                """.formatted(
+                        state.immediateAssistantMessage.trim(),
+                        message.trim()).trim();
+        state.immediateAssistantMessageType = "CLARIFICATION_QUESTION";
+        if (state.immediateAssistantJob == null) {
+            state.immediateAssistantJob = job;
+        }
+    }
+
+    /**
      * Serializes Control structured data.
      */
     private String json(Object value) {
@@ -706,13 +943,14 @@ public class ControlActionExecutor {
     private static final class ExecutionState {
         private final List<ControlDispatchCommand> dispatches =
                 new ArrayList<>();
-        private final List<String> auditParts = new ArrayList<>();
+        private final Set<String> blockedNodeIds = new HashSet<>();
         private JobView representativeJob;
+        private JobView immediateAssistantJob;
         private TaskGraphPlan taskGraph;
         private UUID resumeTaskRunId;
         private String immediateAssistantMessage;
         private String immediateAssistantMessageType;
         private IntentRecognition primaryRecognition;
-        private boolean stopActions;
+        private boolean stopAllActions;
     }
 }
